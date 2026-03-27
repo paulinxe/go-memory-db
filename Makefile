@@ -2,17 +2,22 @@
 # Ctrl+C stops the stack; the container is kept. Run `make down` to remove it.
 .PHONY: build run down test lint
 
+# To be run from the host machine.
 build:
 	DOCKER_UID=$(shell id -u) DOCKER_GID=$(shell id -g) docker compose build
 
-run:
+dev:
 	DOCKER_UID=$(shell id -u) DOCKER_GID=$(shell id -g) docker compose up
 
 down:
 	docker compose down
 
+# To be run from the container.
+run:
+	go run ./cmd/server/main.go -port 6379 -max-connections 100
+
 test:
-	go test ./...
+	go test -race ./...
 
 lint:
 	golangci-lint run

@@ -1,10 +1,10 @@
-package main
+package server
 
 import "sync"
 
-// Store This is the in-memory store for the database
+// Store is the in-memory store for the database.
 type Store struct {
-	mutex sync.RWMutex
+	mutex   sync.RWMutex
 	strings map[string]string
 }
 
