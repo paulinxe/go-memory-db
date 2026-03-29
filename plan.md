@@ -289,15 +289,15 @@ Notes:
 ### What to build
 
 - **Lists:** `LPUSH`, `LPOP`, `LGET`
-- **Hashes:** `HSET`, `HGET`, `HDEL`, `HGETALL`
+- **Hashes:** `HSET` (bulk: many field–value pairs in one command), `HSETONE` (one field; value may contain spaces), `HGET`, `HGETONE`, `HDEL` — `HGET` returns the whole hash (field–value pairs), symmetric with bulk `HSET`; `HGETONE` returns one field, symmetric with `HSETONE`
 - Extend `Store` with `lists` and `hashes` maps; keep Phase 1 string commands as-is
 
 ### Shared rules (all new commands)
 
-- **Parsing:** same style as Phase 1 — `strings.Fields` for the line, `strings.ToUpper` on the verb, `strings.Join(parts[i:], " ")` wherever a “tail” must preserve spaces (list element, hash value).
+- **Parsing:** same style as Phase 1 — `strings.Fields` for the line, `strings.ToUpper` on the verb. Use `strings.Join(parts[i:], " ")` wherever a **tail** must preserve spaces (e.g. `LPUSH` element, **`HSETONE`** value). **Bulk `HSET`** does not join tails per pair: every field and every value must be a **single** token; there must be an **even** number of tokens after the key (`field1 value1 field2 value2 …`). Values containing spaces belong in **`HSETONE`**, not in bulk `HSET`. Quoted arguments (e.g. `"John Doe"`) are **out of scope** until a dedicated lexer is added.
 - **Key errors:** when the line does not supply every key, field, and value the command expects → `-ERR wrong number of arguments for <COMMAND>\n` (match Phase 1 wording).
 - **Unknown / missing keys:** follow Redis-ish behaviour below; use a single consistent `-ERR ...` string per case so tests and telnet sessions stay predictable.
-- **Key type conflicts:** a key can be a string **or** a list **or** a hash, never two at once. **Mutations** (`SET`, `LPUSH`, `HSET`, …) must reject cross-type reuse with something like `-ERR WRONGTYPE …\n` by checking the other maps before applying the write. **Pure list reads** (`LGET`) are defined to read only `lists[key]` and return an empty list when that slot is absent — they do **not** consult `strings` / `hashes` and do not return `WRONGTYPE` for a name collision in another map.
+- **Key type conflicts:** a key can be a string **or** a list **or** a hash, never two at once. **Mutations** (`SET`, `LPUSH`, `HSET`, `HSETONE`, …) must reject cross-type reuse with something like `-ERR WRONGTYPE …\n` by checking the other maps before applying the write. **Pure list reads** (`LGET`) are defined to read only `lists[key]` and return an empty list when that slot is absent — they do **not** consult `strings` / `hashes` and do not return `WRONGTYPE` for a name collision in another map.
 
 ### Protocol examples (lists and hashes)
 
@@ -314,14 +314,17 @@ Notes:
 →  LPOP jobs
 ←  +backup-db
 
-→  HSET user:1 name Jane Doe
+→  HSET user:1 id 1 email jane@example.com
 ←  +OK
 
-→  HGET user:1 name
-←  +Jane Doe
+→  HSETONE user:1 name Jane Doe
+←  +OK
 
-→  HGETALL user:1
-←  *name,Jane Doe,email,jane@example.com
+→  HGET user:1
+←  *id,1,email,jane@example.com,name,Jane Doe
+
+→  HGETONE user:1 name
+←  +Jane Doe
 
 →  HDEL user:1 email
 ←  +OK
@@ -354,15 +357,32 @@ Exact formatting of `*` multi-bulk lines is your choice as long as it is documen
 - **If key missing or list empty:** empty list behaviour → e.g. `*\n` or `*,\n` depending on your `KEYS` convention for “no items”.
 - **Response:** one `*` line listing all elements in order, e.g. comma-separated like Phase 1 `KEYS`.
 
-### `HSET`
+### `HSET` (bulk)
 
-- **Form:** `HSET <key> <field> <value...>` — field is a single token (`parts[2]`); value is `strings.Join(parts[3:], " ")`.
-- **Behaviour:** set `field` inside the hash at `key`. If the hash does not exist, create `map[string]string` for that key. If `key` exists as string or list → `WRONGTYPE`.
+- **Form:** `HSET <key> <field1> <value1> [<field2> <value2> ...]` — after the key, arguments are alternating field / value. Each field and each value is exactly **one** token from `strings.Fields` (no spaces inside the field name or inside the value for this command).
+- **Arity:** at least four tokens (`HSET`, `key`, one field, one value). The number of tokens after `<key>` must be **even**; otherwise report a wrong-argument error (odd field–value tail).
+- **Behaviour:** **merge** all pairs into the hash at `key` (set or overwrite those fields; leave any other fields on the hash unchanged). If the hash does not exist, create `map[string]string` for that key. If `key` exists as a string or list → `WRONGTYPE`.
+- **Whitespace in values:** not supported here — use **`HSETONE`** (tail join) for values like `Jane Doe`.
 - **Response:** `+OK\n` (Redis returns an integer for new vs updated fields; `+OK` is enough for the capstone unless you want that same behaviour).
+
+### `HSETONE`
+
+- **Form:** `HSETONE <key> <field> <value...>` — `field` is `parts[2]`; `value` is `strings.Join(parts[3:], " ")` (same tail rule as `LPUSH`).
+- **Arity:** at least four tokens (`HSETONE`, `key`, `field`, and at least one word for the value); fewer → wrong number of arguments (same spirit as `SET key value`). If you later allow an empty value, document `parts[3:]` being empty for exactly three tokens after the verb.
+- **Behaviour:** set a single `field` inside the hash at `key`. If the hash does not exist, create it. If `key` exists as string or list → `WRONGTYPE`.
+- **Response:** `+OK\n`.
 
 ### `HGET`
 
-- **Form:** `HGET <key> <field>` — three tokens.
+- **Form:** `HGET <key>` — exactly two tokens (same arity pattern as `GET` / `LGET`: one key, whole value).
+- **Behaviour:** return every field–value pair in hash `key`. Order need not be sorted; document whether iteration order is arbitrary (map order) or sorted keys for stable telnet output.
+- **If key missing or empty hash:** `*` line with no pairs (same empty convention as `KEYS` / `LGET` empty list).
+- **If key is wrong type:** `WRONGTYPE`.
+- **Response:** one `*` line encoding pairs — e.g. flat `field1,value1,field2,value2` as in the example above. Avoid ambiguous field values that contain commas unless you escape or switch to a counted multiline format later.
+
+### `HGETONE`
+
+- **Form:** `HGETONE <key> <field>` — three tokens.
 - **Behaviour:** return the value for `field` in hash `key`. Missing hash or missing field → `-ERR no such key\n` / `-ERR no such field\n` or a single `-ERR field not found\n` (choose one scheme).
 - **If key is wrong type:** `WRONGTYPE`.
 - **Response:** `+<value>\n` on success.
@@ -373,14 +393,6 @@ Exact formatting of `*` multi-bulk lines is your choice as long as it is documen
 - **Behaviour:** delete `field` from hash `key`. If hash becomes empty you may delete the hash key from `hashes` so `KEYS` / type checks stay consistent.
 - **If key is not a hash:** `WRONGTYPE`. If hash missing → `+OK\n` (nothing to delete) or a no-op error — pick one.
 - **Response:** `+OK\n`.
-
-### `HGETALL`
-
-- **Form:** `HGETALL <key>` — two tokens.
-- **Behaviour:** return every field–value pair. Order need not be sorted; document whether iteration order is arbitrary (map order) or sorted keys for stable telnet output.
-- **If key missing or empty hash:** `*` line with no pairs (same empty convention as `KEYS`).
-- **If key is wrong type:** `WRONGTYPE`.
-- **Response:** one `*` line encoding pairs — e.g. flat `field1,value1,field2,value2` as in the example above. Avoid ambiguous field values that contain commas unless you escape or switch to a counted multiline format later.
 
 ---
 
@@ -401,7 +413,7 @@ String `Get` / `Set` / `Del` stay as in Phase 1 **but** `DEL` and any “exists?
 
 `**KEYS` in Phase 2:** return the union of keys present in `strings`, `lists`, and `hashes` (each key lives in at most one map, so no deduplication logic beyond scanning all three). Order can remain undefined, as in Phase 1.
 
-List and hash handlers use `RLock` for pure reads (`HGET`, `LGET`) and `Lock` for mutations (`LPUSH`, `LPOP`, `HSET`, `HDEL`), all held for the shortest coherent section (no I/O under the lock).
+List and hash handlers use `RLock` for pure reads (`HGET`, `HGETONE`, `LGET`) and `Lock` for mutations (`LPUSH`, `LPOP`, `HSET`, `HSETONE`, `HDEL`), all held for the shortest coherent section (no I/O under the lock).
 
 **Deferred to Phase 4:** the `expiry` map, `isExpired`, and lazy TTL checks on read. Mixing that here blurs “new value shapes” with “time-based eviction.”
 
