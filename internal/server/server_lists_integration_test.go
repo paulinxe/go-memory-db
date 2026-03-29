@@ -62,3 +62,67 @@ func Test_we_can_push_and_pop_values_with_spaces(t *testing.T) {
 	testutil.SendToServer(t, connection, "LPOP mylist\n")
 	testutil.MustReadLine(t, reader, "+hello world\n")
 }
+
+func Test_lget_requires_key_argument(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+	testutil.SendToServer(t, connection, "LGET\n")
+	testutil.MustReadLine(t, reader, "-wrong number of arguments for LGET. Expecting key\n")
+}
+
+func Test_lget_returns_empty_when_key_missing(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+	testutil.SendToServer(t, connection, "LGET nosuch\n")
+	testutil.MustReadLine(t, reader, "+\n")
+}
+
+func Test_lget_returns_whole_list_in_push_order(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+
+	testutil.SendToServer(t, connection, "LPUSH jobs first\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "LPUSH jobs second task\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+
+	testutil.SendToServer(t, connection, "LGET jobs\n")
+	testutil.MustReadLine(t, reader, "+first,second task\n")
+}
+
+func Test_lget_reflects_list_after_pop(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+
+	testutil.SendToServer(t, connection, "LPUSH q a\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "LPUSH q b\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+
+	testutil.SendToServer(t, connection, "LGET q\n")
+	testutil.MustReadLine(t, reader, "+a,b\n")
+
+	testutil.SendToServer(t, connection, "LPOP q\n")
+	testutil.MustReadLine(t, reader, "+b\n")
+
+	testutil.SendToServer(t, connection, "LGET q\n")
+	testutil.MustReadLine(t, reader, "+a\n")
+
+	testutil.SendToServer(t, connection, "LPOP q\n")
+	testutil.MustReadLine(t, reader, "+a\n")
+
+	testutil.SendToServer(t, connection, "LGET q\n")
+	testutil.MustReadLine(t, reader, "+\n")
+}

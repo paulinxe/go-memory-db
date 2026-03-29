@@ -14,6 +14,7 @@ func (s *Store) LPush(key, value string) error {
 }
 
 // TODO: we will need a LPushMultiple
+// TODO: add comments on each function
 
 func (s *Store) LPop(key string) (string, error) {
 	s.mutex.Lock()
@@ -26,4 +27,14 @@ func (s *Store) LPop(key string) (string, error) {
 	value := s.lists[key][len(s.lists[key])-1]
 	s.lists[key] = s.lists[key][:len(s.lists[key])-1]
 	return value, nil
+}
+
+// LGet returns a copy of lists[key]
+func (s *Store) LGet(key string) []string {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	out := make([]string, len(s.lists[key]))
+	copy(out, s.lists[key])
+	return out
 }

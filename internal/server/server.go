@@ -174,6 +174,14 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 		}
 
 		printSuccess(writer, value)
+	case "LGET":
+		if len(tokens) != 2 {
+			printError(writer, "wrong number of arguments for LGET. Expecting key")
+			return
+		}
+
+		elements := store.LGet(tokens[1])
+		printSuccess(writer, strings.Join(elements, ","))
 	default:
 		printError(writer, "unknown command")
 	}

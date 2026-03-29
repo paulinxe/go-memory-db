@@ -288,7 +288,7 @@ Notes:
 
 ### What to build
 
-- **Lists:** `LPUSH`, `LPOP`, `LRANGE`
+- **Lists:** `LPUSH`, `LPOP`, `LGET`
 - **Hashes:** `HSET`, `HGET`, `HDEL`, `HGETALL`
 - Extend `Store` with `lists` and `hashes` maps; keep Phase 1 string commands as-is
 
@@ -297,7 +297,7 @@ Notes:
 - **Parsing:** same style as Phase 1 — `strings.Fields` for the line, `strings.ToUpper` on the verb, `strings.Join(parts[i:], " ")` wherever a “tail” must preserve spaces (list element, hash value).
 - **Key errors:** when the line does not supply every key, field, and value the command expects → `-ERR wrong number of arguments for <COMMAND>\n` (match Phase 1 wording).
 - **Unknown / missing keys:** follow Redis-ish behaviour below; use a single consistent `-ERR ...` string per case so tests and telnet sessions stay predictable.
-- **Key type conflicts:** a key can be a string **or** a list **or** a hash, never two at once. If the key already exists as another type (e.g. `SET` then `LPUSH` on the same key), reject with something like `-ERR WRONGTYPE Operation against a key holding the wrong kind of value\n`. Implementations track “which map holds the key” or check presence in `strings` / `lists` / `hashes` before mutating.
+- **Key type conflicts:** a key can be a string **or** a list **or** a hash, never two at once. **Mutations** (`SET`, `LPUSH`, `HSET`, …) must reject cross-type reuse with something like `-ERR WRONGTYPE …\n` by checking the other maps before applying the write. **Pure list reads** (`LGET`) are defined to read only `lists[key]` and return an empty list when that slot is absent — they do **not** consult `strings` / `hashes` and do not return `WRONGTYPE` for a name collision in another map.
 
 ### Protocol examples (lists and hashes)
 
@@ -308,7 +308,7 @@ Notes:
 →  LPUSH jobs backup-db
 ←  +OK
 
-→  LRANGE jobs 0 -1
+→  LGET jobs
 ←  *backup-db,send-email
 
 →  LPOP jobs
@@ -342,17 +342,17 @@ Exact formatting of `*` multi-bulk lines is your choice as long as it is documen
 ### `LPOP`
 
 - **Form:** `LPOP <key>` — exactly two tokens.
-- **Behaviour:** remove and return the **left** (head) element — consistent with “L” in `LPUSH` / `LRANGE`. If the list is empty or the key does not exist → treat as “nothing to pop”: respond with `-ERR no such key\n` or `-ERR list is empty\n` (pick one and use it everywhere; Redis uses nil for empty list on `LPOP`; for this text protocol an error line is fine if documented).
+- **Behaviour:** remove and return the **left** (head) element — consistent with “L” in `LPUSH` / `LGET`. If the list is empty or the key does not exist → treat as “nothing to pop”: respond with `-ERR no such key\n` or `-ERR list is empty\n` (pick one and use it everywhere; Redis uses nil for empty list on `LPOP`; for this text protocol an error line is fine if documented).
 - **If key is wrong type:** `WRONGTYPE`.
 - **Response:** `+<element>\n` on success (element may contain spaces if you ever allow that via a different encoding; with the `Join` rule, popped values are whatever was stored).
 
-### `LRANGE`
+### `LGET`
 
-- **Form:** `LRANGE <key> <start> <stop>` — four tokens; `start` and `stop` are integers (parse with `strconv.Atoi`).
-- **Semantics:** Redis-style **inclusive** range on the list index. Support **negative indices**: `-1` is last element, `-2` second-from-last, etc. (define clamping: out-of-range indices typically yield empty range or partial range — match Redis: empty list → empty `*`, range entirely out of bounds → empty `*`).
-- **If key missing:** empty list behaviour → e.g. `*\n` or `*,\n` depending on your `KEYS` convention for “no items”.
-- **If key is wrong type:** `WRONGTYPE`.
-- **Response:** `*` line listing elements in order from `start` to `stop`, e.g. comma-separated like Phase 1 `KEYS`.
+- **Form:** `LGET <key>` — exactly two tokens.
+- **Semantics:** return the **entire** list stored at `key`, in order from first element to last (same order as produced by successive `LPUSH` / `LPOP` semantics you define for the list).
+- **Scope:** read **only** the list map entry for `key` — do not cross-check strings or hashes. If there is no list at `key` (missing key, empty list, or the same key name exists only as a string/hash), treat as **no list elements** and use the empty-list response below — not `WRONGTYPE`.
+- **If key missing or list empty:** empty list behaviour → e.g. `*\n` or `*,\n` depending on your `KEYS` convention for “no items”.
+- **Response:** one `*` line listing all elements in order, e.g. comma-separated like Phase 1 `KEYS`.
 
 ### `HSET`
 
@@ -401,7 +401,7 @@ String `Get` / `Set` / `Del` stay as in Phase 1 **but** `DEL` and any “exists?
 
 `**KEYS` in Phase 2:** return the union of keys present in `strings`, `lists`, and `hashes` (each key lives in at most one map, so no deduplication logic beyond scanning all three). Order can remain undefined, as in Phase 1.
 
-List and hash handlers use `RLock` for pure reads (`HGET`, `LRANGE`) and `Lock` for mutations (`LPUSH`, `LPOP`, `HSET`, `HDEL`), all held for the shortest coherent section (no I/O under the lock).
+List and hash handlers use `RLock` for pure reads (`HGET`, `LGET`) and `Lock` for mutations (`LPUSH`, `LPOP`, `HSET`, `HDEL`), all held for the shortest coherent section (no I/O under the lock).
 
 **Deferred to Phase 4:** the `expiry` map, `isExpired`, and lazy TTL checks on read. Mixing that here blurs “new value shapes” with “time-based eviction.”
 
