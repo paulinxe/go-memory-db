@@ -122,7 +122,12 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 			return
 		}
 
-		store.Set(tokens[1], strings.Join(tokens[2:], " "))
+		err := store.Set(tokens[1], strings.Join(tokens[2:], " "))
+		if err != nil {
+			printError(writer, err.Error())
+			return
+		}
+
 		printSuccess(writer, "OK")
 	case "GET":
 		if len(tokens) != 2 {
@@ -182,6 +187,32 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 
 		elements := store.LGet(tokens[1])
 		printSuccess(writer, strings.Join(elements, ","))
+	case "HSETONE":
+		if len(tokens) < 4 {
+			printError(writer, "wrong number of arguments for HSETONE. Expecting key field value")
+			return
+		}
+
+		err := store.HSetOne(tokens[1], tokens[2], strings.Join(tokens[3:], " "))
+		if err != nil {
+			printError(writer, err.Error())
+			return
+		}
+
+		printSuccess(writer, "OK")
+	case "HGETONE":
+		if len(tokens) != 3 {
+			printError(writer, "wrong number of arguments for HGETONE. Expecting key field")
+			return
+		}
+
+		value, err := store.HGetOne(tokens[1], tokens[2])
+		if err != nil {
+			printError(writer, err.Error())
+			return
+		}
+
+		printSuccess(writer, value)
 	default:
 		printError(writer, "unknown command")
 	}

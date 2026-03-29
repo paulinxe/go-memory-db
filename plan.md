@@ -294,10 +294,10 @@ Notes:
 
 ### Shared rules (all new commands)
 
-- **Parsing:** same style as Phase 1 — `strings.Fields` for the line, `strings.ToUpper` on the verb. Use `strings.Join(parts[i:], " ")` wherever a **tail** must preserve spaces (e.g. `LPUSH` element, **`HSETONE`** value). **Bulk `HSET`** does not join tails per pair: every field and every value must be a **single** token; there must be an **even** number of tokens after the key (`field1 value1 field2 value2 …`). Values containing spaces belong in **`HSETONE`**, not in bulk `HSET`. Quoted arguments (e.g. `"John Doe"`) are **out of scope** until a dedicated lexer is added.
+- **Parsing:** same style as Phase 1 — `strings.Fields` for the line, `strings.ToUpper` on the verb. Use `strings.Join(parts[i:], " ")` wherever a **tail** must preserve spaces (e.g. `LPUSH` element, `**HSETONE`** value). **Bulk `HSET`** does not join tails per pair: every field and every value must be a **single** token; there must be an **even** number of tokens after the key (`field1 value1 field2 value2 …`). Values containing spaces belong in `**HSETONE`**, not in bulk `HSET`. Quoted arguments (e.g. `"John Doe"`) are **out of scope** until a dedicated lexer is added.
 - **Key errors:** when the line does not supply every key, field, and value the command expects → `-ERR wrong number of arguments for <COMMAND>\n` (match Phase 1 wording).
 - **Unknown / missing keys:** follow Redis-ish behaviour below; use a single consistent `-ERR ...` string per case so tests and telnet sessions stay predictable.
-- **Key type conflicts:** a key can be a string **or** a list **or** a hash, never two at once. **Mutations** (`SET`, `LPUSH`, `HSET`, `HSETONE`, …) must reject cross-type reuse with something like `-ERR WRONGTYPE …\n` by checking the other maps before applying the write. **Pure list reads** (`LGET`) are defined to read only `lists[key]` and return an empty list when that slot is absent — they do **not** consult `strings` / `hashes` and do not return `WRONGTYPE` for a name collision in another map.
+- **Key type conflicts:** a key can be a string **or** a list **or** a hash, never two at once. **Mutations** (`SET`, `LPUSH`, `HSET`, `HSETONE`, …) must reject cross-type reuse with something like `-ERR WRONGTYPE …\n` by checking the other maps before applying the write. **Pure reads** that target a single type map do **not** cross-check the other maps and do **not** return `WRONGTYPE` when the same name exists as another type: **`LGET`** reads only `lists[key]` (empty list if no list there); **`HGET`** / **`HGETONE`** read only `hashes[key]` (empty hash / `key not found` / `field not found` as documented below — not `WRONGTYPE`).
 
 ### Protocol examples (lists and hashes)
 
@@ -362,7 +362,7 @@ Exact formatting of `*` multi-bulk lines is your choice as long as it is documen
 - **Form:** `HSET <key> <field1> <value1> [<field2> <value2> ...]` — after the key, arguments are alternating field / value. Each field and each value is exactly **one** token from `strings.Fields` (no spaces inside the field name or inside the value for this command).
 - **Arity:** at least four tokens (`HSET`, `key`, one field, one value). The number of tokens after `<key>` must be **even**; otherwise report a wrong-argument error (odd field–value tail).
 - **Behaviour:** **merge** all pairs into the hash at `key` (set or overwrite those fields; leave any other fields on the hash unchanged). If the hash does not exist, create `map[string]string` for that key. If `key` exists as a string or list → `WRONGTYPE`.
-- **Whitespace in values:** not supported here — use **`HSETONE`** (tail join) for values like `Jane Doe`.
+- **Whitespace in values:** not supported here — use `**HSETONE`** (tail join) for values like `Jane Doe`.
 - **Response:** `+OK\n` (Redis returns an integer for new vs updated fields; `+OK` is enough for the capstone unless you want that same behaviour).
 
 ### `HSETONE`
@@ -375,16 +375,16 @@ Exact formatting of `*` multi-bulk lines is your choice as long as it is documen
 ### `HGET`
 
 - **Form:** `HGET <key>` — exactly two tokens (same arity pattern as `GET` / `LGET`: one key, whole value).
-- **Behaviour:** return every field–value pair in hash `key`. Order need not be sorted; document whether iteration order is arbitrary (map order) or sorted keys for stable telnet output.
+- **Scope:** read **only** `hashes[key]` — do not consult `strings` / `lists`. If there is no hash at `key` (missing entry, or the name exists only as a string/list), treat as **no hash pairs** — same empty response as below — **not** `WRONGTYPE`.
+- **Behaviour:** return every field–value pair in that hash entry. Order need not be sorted; document whether iteration order is arbitrary (map order) or sorted keys for stable telnet output.
 - **If key missing or empty hash:** `*` line with no pairs (same empty convention as `KEYS` / `LGET` empty list).
-- **If key is wrong type:** `WRONGTYPE`.
 - **Response:** one `*` line encoding pairs — e.g. flat `field1,value1,field2,value2` as in the example above. Avoid ambiguous field values that contain commas unless you escape or switch to a counted multiline format later.
 
 ### `HGETONE`
 
 - **Form:** `HGETONE <key> <field>` — three tokens.
-- **Behaviour:** return the value for `field` in hash `key`. Missing hash or missing field → `-ERR no such key\n` / `-ERR no such field\n` or a single `-ERR field not found\n` (choose one scheme).
-- **If key is wrong type:** `WRONGTYPE`.
+- **Scope:** read **only** `hashes[key]` — do not consult `strings` / `lists` (same idea as `LGET` / `HGET`). If there is no hash at `key`, respond as **missing hash** even when the same name is a string or list — **not** `WRONGTYPE`.
+- **Behaviour:** return the value for `field` in hash `key`. Missing hash → e.g. `-ERR key not found\n` (match `GET`). Missing field in an existing hash → e.g. `-ERR field not found\n` (pick one consistent scheme).
 - **Response:** `+<value>\n` on success.
 
 ### `HDEL`

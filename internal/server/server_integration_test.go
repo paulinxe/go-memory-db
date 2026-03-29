@@ -79,6 +79,21 @@ func Test_we_can_delete_values(t *testing.T) {
 
 	testutil.SendToServer(t, connection, "LPOP mylist\n")
 	testutil.MustReadLine(t, reader, "-list is empty\n")
+
+	testutil.SendToServer(t, connection, "HSETONE h k v\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HGETONE h k\n")
+	testutil.MustReadLine(t, reader, "+v\n")
+
+	testutil.SendToServer(t, connection, "DEL h\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HGETONE h k\n")
+	testutil.MustReadLine(t, reader, "-key not found\n")
+
+	testutil.SendToServer(t, connection, "HSETONE h k2 v2\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HGETONE h k2\n")
+	testutil.MustReadLine(t, reader, "+v2\n")
 }
 
 func Test_delete_fails_when_missing_value(t *testing.T) {
@@ -108,6 +123,11 @@ func Test_we_can_list_keys(t *testing.T) {
 	testutil.SendToServer(t, connection, "LPUSH mylist 1\n")
 	testutil.MustReadLine(t, reader, "+OK\n")
 
+	testutil.SendToServer(t, connection, "HSETONE hsh f v\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HGETONE hsh f\n")
+	testutil.MustReadLine(t, reader, "+v\n")
+
 	testutil.SendToServer(t, connection, "KEYS\n")
 	line, err := reader.ReadString('\n')
 	if err != nil {
@@ -120,13 +140,13 @@ func Test_we_can_list_keys(t *testing.T) {
 
 	body := strings.TrimSuffix(strings.TrimPrefix(line, "+"), "\n")
 	parts := strings.Split(body, ",")
-	if len(parts) != 3 {
-		t.Fatalf("expected 3 keys, got %q", line)
+	if len(parts) != 4 {
+		t.Fatalf("expected 4 keys, got %q", line)
 	}
 
 	sort.Strings(parts)
-	if parts[0] != "mylist" || parts[1] != "y" || parts[2] != "z" {
-		t.Fatalf("KEYS keys %v, want mylist, y and z", parts)
+	if parts[0] != "hsh" || parts[1] != "mylist" || parts[2] != "y" || parts[3] != "z" {
+		t.Fatalf("KEYS keys %v, want hsh, mylist, y, z", parts)
 	}
 }
 

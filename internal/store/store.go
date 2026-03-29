@@ -7,12 +7,14 @@ type Store struct {
 	mutex   sync.RWMutex
 	strings map[string]string
 	lists   map[string][]string
+	hashes  map[string]map[string]string
 }
 
 func NewStore() *Store {
 	return &Store{
 		strings: make(map[string]string),
 		lists:   make(map[string][]string),
+		hashes:  make(map[string]map[string]string),
 	}
 }
 
@@ -26,6 +28,10 @@ func (s *Store) keyAlreadyExists(key string, excludeType string) bool {
 		return true
 	}
 
+	if _, ok := s.hashes[key]; ok && excludeType != "hashes" {
+		return true
+	}
+
 	return false
 }
 
@@ -34,17 +40,21 @@ func (s *Store) Del(key string) {
 	defer s.mutex.Unlock()
 	delete(s.strings, key)
 	delete(s.lists, key)
+	delete(s.hashes, key)
 }
 
 func (s *Store) Keys() []string {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
-	keys := make([]string, 0, len(s.strings)+len(s.lists))
+	keys := make([]string, 0, len(s.strings)+len(s.lists)+len(s.hashes))
 	for key := range s.strings {
 		keys = append(keys, key)
 	}
 	for key := range s.lists {
+		keys = append(keys, key)
+	}
+	for key := range s.hashes {
 		keys = append(keys, key)
 	}
 
