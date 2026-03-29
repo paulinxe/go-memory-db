@@ -17,7 +17,7 @@ run:
 	go run ./cmd/server/main.go -port 6379 -max-connections 100
 
 test:
-	go test -race ./...
+	go test -v -race ./...
 
 lint:
 	golangci-lint run

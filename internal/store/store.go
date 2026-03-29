@@ -28,3 +28,25 @@ func (s *Store) keyAlreadyExists(key string, excludeType string) bool {
 
 	return false
 }
+
+func (s *Store) Del(key string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	delete(s.strings, key)
+	delete(s.lists, key)
+}
+
+func (s *Store) Keys() []string {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	keys := make([]string, 0, len(s.strings)+len(s.lists))
+	for key := range s.strings {
+		keys = append(keys, key)
+	}
+	for key := range s.lists {
+		keys = append(keys, key)
+	}
+
+	return keys
+}

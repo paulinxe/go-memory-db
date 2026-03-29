@@ -18,23 +18,3 @@ func (s *Store) Get(key string) (string, bool) {
 	value, ok := s.strings[key]
 	return value, ok
 }
-
-func (s *Store) Del(key string) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	delete(s.strings, key)
-}
-
-func (s *Store) Keys() []string {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
-	// We make a copy as we don't want to return the underlying map
-	// that is protected by the mutex
-	keys := make([]string, 0, len(s.strings))
-	for key := range s.strings {
-		keys = append(keys, key)
-	}
-
-	return keys
-}
