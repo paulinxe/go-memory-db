@@ -1,23 +1,15 @@
-package server
+package store
 
-import "sync"
-
-// Store is the in-memory store for the database.
-type Store struct {
-	mutex   sync.RWMutex
-	strings map[string]string
-}
-
-func NewStore() *Store {
-	return &Store{
-		strings: make(map[string]string),
-	}
-}
-
-func (s *Store) Set(key, value string) {
+func (s *Store) Set(key, value string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
+	if s.keyAlreadyExists(key, "strings") {
+		return ErrKeyAlreadyExists
+	}
+
 	s.strings[key] = value
+	return nil
 }
 
 func (s *Store) Get(key string) (string, bool) {

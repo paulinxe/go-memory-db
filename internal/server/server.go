@@ -7,13 +7,15 @@ import (
 	"net"
 	"strings"
 	"sync"
+
+	"go-memory-db/internal/store"
 )
 
 // Server is the TCP command server.
 type Server struct {
 	Port           int
 	MaxConnections int
-	Store          *Store
+	Store          *store.Store
 
 	mutex          sync.Mutex
 	listener       net.Listener // set while Serve is running; Close() clears and closes it
@@ -27,7 +29,7 @@ func NewServer(port, maxConnections int) *Server {
 	return &Server{
 		Port:           port,
 		MaxConnections: maxConnections,
-		Store:          NewStore(),
+		Store:          store.NewStore(),
 	}
 }
 
@@ -86,12 +88,12 @@ func (s *Server) serve(listener net.Listener) error {
 	}
 }
 
-func handleConnection(conn net.Conn, connections <-chan struct{}, store *Store) {
+func handleConnection(conn net.Conn, connections <-chan struct{}, st *store.Store) {
 	defer closeConnection(conn, connections)
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		line := scanner.Text()
-		handleCommand(conn, line, store)
+		handleCommand(conn, line, st)
 	}
 }
 
@@ -102,49 +104,77 @@ func closeConnection(conn net.Conn, connections <-chan struct{}) {
 	fmt.Printf("connection from %s closed\n", conn.RemoteAddr())
 }
 
-func handleCommand(w io.Writer, line string, store *Store) {
+func handleCommand(writer io.Writer, line string, store *store.Store) {
 	tokens := strings.Fields(line)
 	if len(tokens) == 0 {
 		return
 	}
 
+	// TODO: to check if worth it introducing a Locator
+
 	command := tokens[0]
 	switch strings.ToUpper(command) {
 	case "PING":
-		io.WriteString(w, "+PONG\n")
+		io.WriteString(writer, "+PONG\n")
 	case "SET":
 		if len(tokens) < 3 {
-			printError(w, "wrong number of arguments for SET. Expecting key value")
+			printError(writer, "wrong number of arguments for SET. Expecting key value")
 			return
 		}
 
 		store.Set(tokens[1], strings.Join(tokens[2:], " "))
-		printSuccess(w, "OK")
+		printSuccess(writer, "OK")
 	case "GET":
 		if len(tokens) != 2 {
-			printError(w, "wrong number of arguments for GET. Expecting key")
+			printError(writer, "wrong number of arguments for GET. Expecting key")
 			return
 		}
 
 		value, ok := store.Get(tokens[1])
 		if !ok {
-			printError(w, "key not found")
+			printError(writer, "key not found")
 			return
 		}
 
-		printSuccess(w, value)
+		printSuccess(writer, value)
 	case "DEL":
 		if len(tokens) != 2 {
-			printError(w, "wrong number of arguments for DEL. Expecting key")
+			printError(writer, "wrong number of arguments for DEL. Expecting key")
 			return
 		}
 
 		store.Del(tokens[1])
-		printSuccess(w, "OK")
+		printSuccess(writer, "OK")
 	case "KEYS":
 		keys := store.Keys()
-		printSuccess(w, strings.Join(keys, ","))
+		printSuccess(writer, strings.Join(keys, ","))
+	case "LPUSH":
+		if len(tokens) < 3 {
+			printError(writer, "wrong number of arguments for LPUSH. Expecting key value")
+			return
+		}
+
+		err := store.LPush(tokens[1], strings.Join(tokens[2:], " "))
+		if err != nil {
+			printError(writer, err.Error())
+			return
+		}
+
+		printSuccess(writer, "OK")
+	case "LPOP":
+		if len(tokens) != 2 {
+			printError(writer, "wrong number of arguments for LPOP. Expecting key")
+			return
+		}
+
+		value, err := store.LPop(tokens[1])
+		if err != nil {
+			printError(writer, err.Error())
+			return
+		}
+
+		printSuccess(writer, value)
 	default:
-		printError(w, "unknown command")
+		printError(writer, "unknown command")
 	}
 }

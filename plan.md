@@ -9,6 +9,7 @@ A multi-namespace in-memory database with a custom text protocol, TTL expiry, an
 **Goal:** `telnet localhost 6379` and run commands manually.
 
 ### What to build
+
 - TCP listener, connection handler goroutine per client
 - Parse commands, route to handlers
 - `SET`, `GET`, `DEL`, `KEYS`, `PING`
@@ -36,6 +37,7 @@ Simple line-based text protocol over TCP. Commands are space-separated, response
 ```
 
 Response prefixes:
+
 - `+` success
 - `-` error
 - `*` push message (pub/sub) or multi-value response
@@ -144,8 +146,9 @@ default:
 ```
 
 Key decisions:
+
 - `strings.ToUpper` on the verb — `set`, `SET`, and `Set` all work
-- Each handler validates argument count and writes `-ERR wrong number of arguments for X\n` if wrong
+- Each handler validates that all required keys (and other tokens) are present and writes `-ERR wrong number of arguments for X\n` if not
 - `SET` values support spaces: `SET mykey hello world` stores `"hello world"` via `strings.Join(parts[2:], " ")`
 
 ### The store — Phase 1
@@ -195,9 +198,10 @@ func (s *Store) Keys() []string {
 ```
 
 Notes:
+
 - `defer` on unlock is idiomatic — ensures the lock is always released even on panic
 - `Keys` copies the slice under the lock; map iteration order is random, sort after the lock if needed
-- In Phase 2, `Store` moves inside a `Namespace` struct — designing it as its own type now makes that refactor trivial
+- In Phase 3, `Store` moves inside a `Namespace` struct — designing it as its own type now makes that refactor trivial
 
 The `Server` struct for Phase 1:
 
@@ -270,6 +274,7 @@ func (s *Server) handleConn(conn net.Conn) {
 ```
 
 Notes:
+
 - `defer conn.Close()` at the top ensures the connection is always closed however the function exits
 - `fmt.Fprintf` writes directly to `net.Conn` (implements `io.Writer`) — no write-side buffering needed
 - Write errors are not checked per command; the next `scanner.Scan()` will return false on a dead connection and exit cleanly
@@ -277,32 +282,111 @@ Notes:
 
 ---
 
-## Phase 2 — Lists, hashes, namespaces
+## Phase 2 — Lists and hashes
 
-**Goal:** multiple clients in different namespaces with no races.
+**Goal:** richer value types behind the same single global store as Phase 1 — no namespaces yet.
 
 ### What to build
-- `LPUSH`, `LPOP`, `LRANGE`
-- `HSET`, `HGET`, `HDEL`, `HGETALL`
-- `USE` command — namespace switching
-- Double-check pattern in `getOrCreate`
 
-### Protocol additions
+- **Lists:** `LPUSH`, `LPOP`, `LRANGE`
+- **Hashes:** `HSET`, `HGET`, `HDEL`, `HGETALL`
+- Extend `Store` with `lists` and `hashes` maps; keep Phase 1 string commands as-is
+
+### Shared rules (all new commands)
+
+- **Parsing:** same style as Phase 1 — `strings.Fields` for the line, `strings.ToUpper` on the verb, `strings.Join(parts[i:], " ")` wherever a “tail” must preserve spaces (list element, hash value).
+- **Key errors:** when the line does not supply every key, field, and value the command expects → `-ERR wrong number of arguments for <COMMAND>\n` (match Phase 1 wording).
+- **Unknown / missing keys:** follow Redis-ish behaviour below; use a single consistent `-ERR ...` string per case so tests and telnet sessions stay predictable.
+- **Key type conflicts:** a key can be a string **or** a list **or** a hash, never two at once. If the key already exists as another type (e.g. `SET` then `LPUSH` on the same key), reject with something like `-ERR WRONGTYPE Operation against a key holding the wrong kind of value\n`. Implementations track “which map holds the key” or check presence in `strings` / `lists` / `hashes` before mutating.
+
+### Protocol examples (lists and hashes)
 
 ```
-→  HSET user:1 name John
+→  LPUSH jobs send-email
+←  +OK
+
+→  LPUSH jobs backup-db
+←  +OK
+
+→  LRANGE jobs 0 -1
+←  *backup-db,send-email
+
+→  LPOP jobs
+←  +backup-db
+
+→  HSET user:1 name Jane Doe
 ←  +OK
 
 →  HGET user:1 name
-←  +John
+←  +Jane Doe
 
-→  USE db1
-←  +OK                      ← switched namespace
+→  HGETALL user:1
+←  *name,Jane Doe,email,jane@example.com
+
+→  HDEL user:1 email
+←  +OK
 ```
+
+Exact formatting of `*` multi-bulk lines is your choice as long as it is documented and parseable; the examples above use comma-separated tokens in one line (same spirit as `KEYS`). If you prefer each command to require a fixed key pattern instead of free-form tails, say so in the README and tighten the grammar.
+
+---
+
+### `LPUSH`
+
+- **Form:** `LPUSH <key> <element>` — one element per command for simplicity; the element is `strings.Join(parts[2:], " ")` so values can contain spaces.
+- **Behaviour:** append `element` to the list stored at `key`. If `key` does not exist, create an empty list first. If `key` exists but is not a list → `WRONGTYPE`.
+- **Interaction with strings/hashes:** pushing to a new key should not create a row in `strings` or `hashes`; only `lists[key]` grows. If the key was a string or hash, that is `WRONGTYPE` (unless you explicitly `DEL` first — Phase 1 `DEL` should remove the key from whichever map holds it once you track type; see note under **Store** below).
+- **Response:** `+OK\n` on success.
+- **Locking:** writer lock for the duration of read-modify-write on the slice.
+
+### `LPOP`
+
+- **Form:** `LPOP <key>` — exactly two tokens.
+- **Behaviour:** remove and return the **left** (head) element — consistent with “L” in `LPUSH` / `LRANGE`. If the list is empty or the key does not exist → treat as “nothing to pop”: respond with `-ERR no such key\n` or `-ERR list is empty\n` (pick one and use it everywhere; Redis uses nil for empty list on `LPOP`; for this text protocol an error line is fine if documented).
+- **If key is wrong type:** `WRONGTYPE`.
+- **Response:** `+<element>\n` on success (element may contain spaces if you ever allow that via a different encoding; with the `Join` rule, popped values are whatever was stored).
+
+### `LRANGE`
+
+- **Form:** `LRANGE <key> <start> <stop>` — four tokens; `start` and `stop` are integers (parse with `strconv.Atoi`).
+- **Semantics:** Redis-style **inclusive** range on the list index. Support **negative indices**: `-1` is last element, `-2` second-from-last, etc. (define clamping: out-of-range indices typically yield empty range or partial range — match Redis: empty list → empty `*`, range entirely out of bounds → empty `*`).
+- **If key missing:** empty list behaviour → e.g. `*\n` or `*,\n` depending on your `KEYS` convention for “no items”.
+- **If key is wrong type:** `WRONGTYPE`.
+- **Response:** `*` line listing elements in order from `start` to `stop`, e.g. comma-separated like Phase 1 `KEYS`.
+
+### `HSET`
+
+- **Form:** `HSET <key> <field> <value...>` — field is a single token (`parts[2]`); value is `strings.Join(parts[3:], " ")`.
+- **Behaviour:** set `field` inside the hash at `key`. If the hash does not exist, create `map[string]string` for that key. If `key` exists as string or list → `WRONGTYPE`.
+- **Response:** `+OK\n` (Redis returns an integer for new vs updated fields; `+OK` is enough for the capstone unless you want that same behaviour).
+
+### `HGET`
+
+- **Form:** `HGET <key> <field>` — three tokens.
+- **Behaviour:** return the value for `field` in hash `key`. Missing hash or missing field → `-ERR no such key\n` / `-ERR no such field\n` or a single `-ERR field not found\n` (choose one scheme).
+- **If key is wrong type:** `WRONGTYPE`.
+- **Response:** `+<value>\n` on success.
+
+### `HDEL`
+
+- **Form:** `HDEL <key> <field>` — one field per invocation for minimal scope; optional extension: multiple fields in one line if you document it.
+- **Behaviour:** delete `field` from hash `key`. If hash becomes empty you may delete the hash key from `hashes` so `KEYS` / type checks stay consistent.
+- **If key is not a hash:** `WRONGTYPE`. If hash missing → `+OK\n` (nothing to delete) or a no-op error — pick one.
+- **Response:** `+OK\n`.
+
+### `HGETALL`
+
+- **Form:** `HGETALL <key>` — two tokens.
+- **Behaviour:** return every field–value pair. Order need not be sorted; document whether iteration order is arbitrary (map order) or sorted keys for stable telnet output.
+- **If key missing or empty hash:** `*` line with no pairs (same empty convention as `KEYS`).
+- **If key is wrong type:** `WRONGTYPE`.
+- **Response:** one `*` line encoding pairs — e.g. flat `field1,value1,field2,value2` as in the example above. Avoid ambiguous field values that contain commas unless you escape or switch to a counted multiline format later.
+
+---
 
 ### The store — `sync.RWMutex`
 
-The heart of the database. Multiple clients reading simultaneously is fine — only writes need exclusivity:
+Same locking idea as Phase 1: many concurrent readers, writers exclusive. Add `lists` (`map[string][]string`) and `hashes` (`map[string]map[string]string`):
 
 ```go
 type Store struct {
@@ -310,32 +394,41 @@ type Store struct {
     strings map[string]string
     lists   map[string][]string
     hashes  map[string]map[string]string
-    expiry  map[string]time.Time  // key → expiry time
-}
-
-func (s *Store) Get(key string) (string, bool) {
-    s.mu.RLock()
-    defer s.mu.RUnlock()
-    if s.isExpired(key) {  // check TTL under the read lock
-        return "", false
-    }
-    v, ok := s.strings[key]
-    return v, ok
-}
-
-func (s *Store) Set(key, value string) {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-    s.strings[key] = value
-    delete(s.expiry, key)  // clear any existing TTL
 }
 ```
 
-The subtle problem: `isExpired` needs to be called under a lock — if you check expiry outside the lock, another goroutine can modify `expiry` between your check and your read. This is a classic time-of-check/time-of-use race.
+String `Get` / `Set` / `Del` stay as in Phase 1 **but** `DEL` and any “exists?” logic must be type-aware: deleting a key removes it from whichever of `strings`, `lists`, or `hashes` holds it (Phase 1 only had `strings`; extend `Del` accordingly). `SET` on an existing list/hash key should either be `WRONGTYPE` or implicitly wipe other types — **recommend `WRONGTYPE`** so data is never silently destroyed.
+
+`**KEYS` in Phase 2:** return the union of keys present in `strings`, `lists`, and `hashes` (each key lives in at most one map, so no deduplication logic beyond scanning all three). Order can remain undefined, as in Phase 1.
+
+List and hash handlers use `RLock` for pure reads (`HGET`, `LRANGE`) and `Lock` for mutations (`LPUSH`, `LPOP`, `HSET`, `HDEL`), all held for the shortest coherent section (no I/O under the lock).
+
+**Deferred to Phase 4:** the `expiry` map, `isExpired`, and lazy TTL checks on read. Mixing that here blurs “new value shapes” with “time-based eviction.”
+
+`Server` is still the Phase 1 shape (`store Store` only). Namespace switching arrives next.
+
+---
+
+## Phase 3 — Namespaces
+
+**Goal:** multiple clients attached to different logical databases, with a race-free registry.
+
+### What to build
+
+- `USE` command — per-connection namespace switching
+- `map[string]*Namespace` on the server; double-check pattern in `getOrCreate`
+- Each `Namespace` wraps a `Store` (and later a TTL daemon and pub/sub `Broker` in Phases 4 and 5)
+
+### Protocol additions
+
+```
+→  USE db1
+←  +OK                      ← switched namespace
+```
 
 ### Namespace switching
 
-Each namespace is an isolated `Store` + `Broker` + TTL daemon. The namespace registry itself needs protection:
+Each namespace is an isolated `Store` + (later) `Broker` + TTL daemon. The namespace registry itself needs protection:
 
 ```go
 type Server struct {
@@ -369,11 +462,12 @@ The double-check pattern is important — between releasing the read lock and ac
 
 ---
 
-## Phase 3 — TTL expiry
+## Phase 4 — TTL expiry
 
 **Goal:** `SET foo bar` → `EXPIRE foo 5` → wait 6 seconds → `GET foo` returns nothing.
 
 ### What to build
+
 - `EXPIRE`, `TTL` commands
 - Ticker daemon per namespace
 - Lazy expiry on read + active eviction on tick
@@ -384,6 +478,39 @@ The double-check pattern is important — between releasing the read lock and ac
 →  EXPIRE mykey 30
 ←  +OK
 ```
+
+### Store changes — `expiry` and lazy checks
+
+Add a map from key to expiry time, and clear it on `SET` when you replace a value. Reads must treat expired keys as missing:
+
+```go
+type Store struct {
+    mu      sync.RWMutex
+    strings map[string]string
+    lists   map[string][]string
+    hashes  map[string]map[string]string
+    expiry  map[string]time.Time  // key → expiry time
+}
+
+func (s *Store) Get(key string) (string, bool) {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+    if s.isExpired(key) {  // check TTL under the read lock
+        return "", false
+    }
+    v, ok := s.strings[key]
+    return v, ok
+}
+
+func (s *Store) Set(key, value string) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    s.strings[key] = value
+    delete(s.expiry, key)  // clear any existing TTL
+}
+```
+
+`isExpired` must run under the same lock as the read of the value — if you check expiry outside the lock, another goroutine can change `expiry` between your check and your read (time-of-check/time-of-use race).
 
 ### TTL expiry — ticker goroutine
 
@@ -424,11 +551,12 @@ Worth thinking about: why does `evictExpired` need a write lock even though it's
 
 ---
 
-## Phase 4 — Pub/sub
+## Phase 5 — Pub/sub
 
 **Goal:** three `telnet` sessions — two subscribers, one publisher — messages fan out in real time.
 
 ### What to build
+
 - `SUBSCRIBE`, `PUBLISH`, `UNSUBSCRIBE`
 - Broker with fan-out
 - Slow subscriber handling
@@ -511,11 +639,12 @@ This goroutine is now dedicated to pushing messages — it can't handle other co
 
 ---
 
-## Phase 5 — Graceful shutdown and hardening
+## Phase 6 — Graceful shutdown and hardening
 
 **Goal:** clean shutdown under load, zero race conditions, no goroutine leaks.
 
 ### What to build
+
 - Signal handling, clean shutdown sequence
 - `-race` clean on all code paths
 - Benchmark with multiple concurrent clients
@@ -555,12 +684,14 @@ The shutdown sequence is ordered deliberately — close the listener first (stop
 
 ### Verification checklist
 
-| Feature | How to verify |
-|---|---|
-| Store | `go test -race` with concurrent readers and writers |
-| Worker pool | Submit 200 jobs with 5 workers, verify all complete |
-| Pub/sub | Three telnet sessions, confirm fan-out and clean unsubscribe |
+
+| Feature           | How to verify                                                |
+| ----------------- | ------------------------------------------------------------ |
+| Store             | `go test -race` with concurrent readers and writers          |
+| Worker pool       | Submit 200 jobs with 5 workers, verify all complete          |
+| Pub/sub           | Three telnet sessions, confirm fan-out and clean unsubscribe |
 | Graceful shutdown | `Ctrl+C` mid-load, verify no connections dropped mid-command |
+
 
 Run `go run -race main.go` throughout. Treat every race warning as a failing test.
 
