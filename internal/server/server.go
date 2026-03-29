@@ -187,6 +187,19 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 
 		elements := store.LGet(tokens[1])
 		printSuccess(writer, strings.Join(elements, ","))
+	case "HSET":
+		if len(tokens) < 4 {
+			printError(writer, "wrong number of arguments for HSET. Expecting key field value [field value ...]")
+			return
+		}
+
+		err := store.HSet(tokens[1], tokens[2:])
+		if err != nil {
+			printError(writer, err.Error())
+			return
+		}
+
+		printSuccess(writer, "OK")
 	case "HSETONE":
 		if len(tokens) < 4 {
 			printError(writer, "wrong number of arguments for HSETONE. Expecting key field value")
@@ -200,6 +213,14 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 		}
 
 		printSuccess(writer, "OK")
+	case "HGET":
+		if len(tokens) != 2 {
+			printError(writer, "wrong number of arguments for HGET. Expecting key")
+			return
+		}
+
+		pairs := store.HGet(tokens[1])
+		printSuccess(writer, strings.Join(pairs, ","))
 	case "HGETONE":
 		if len(tokens) != 3 {
 			printError(writer, "wrong number of arguments for HGETONE. Expecting key field")

@@ -7,6 +7,72 @@ import (
 	"go-memory-db/internal/server/testutil"
 )
 
+func Test_hset_requires_key_and_even_field_value_pairs(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+
+	testutil.SendToServer(t, connection, "HSET\n")
+	testutil.MustReadLine(t, reader, "-wrong number of arguments for HSET. Expecting key field value [field value ...]\n")
+
+	testutil.SendToServer(t, connection, "HSET onlykey\n")
+	testutil.MustReadLine(t, reader, "-wrong number of arguments for HSET. Expecting key field value [field value ...]\n")
+
+	testutil.SendToServer(t, connection, "HSET onlykey f1\n")
+	testutil.MustReadLine(t, reader, "-wrong number of arguments for HSET. Expecting key field value [field value ...]\n")
+
+	testutil.SendToServer(t, connection, "HSET onlykey a b c\n")
+	testutil.MustReadLine(t, reader, "-hset pairs must have even length\n")
+
+	testutil.SendToServer(t, connection, "HSET onlykey f1 v1 extra\n")
+	testutil.MustReadLine(t, reader, "-hset pairs must have even length\n")
+}
+
+func Test_hset_merges_multiple_pairs_and_preserves_other_fields(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+
+	testutil.SendToServer(t, connection, "HSET user:1 id 1 email jane@example.com\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HGET user:1\n")
+	testutil.MustReadLine(t, reader, "+email,jane@example.com,id,1\n")
+
+	testutil.SendToServer(t, connection, "HSET user:1 email jane2@example.com role admin\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HGET user:1\n")
+	testutil.MustReadLine(t, reader, "+email,jane2@example.com,id,1,role,admin\n")
+}
+
+func Test_hget_requires_key(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+
+	testutil.SendToServer(t, connection, "HGET\n")
+	testutil.MustReadLine(t, reader, "-wrong number of arguments for HGET. Expecting key\n")
+
+	testutil.SendToServer(t, connection, "HGET k extra\n")
+	testutil.MustReadLine(t, reader, "-wrong number of arguments for HGET. Expecting key\n")
+}
+
+func Test_hget_returns_empty_when_hash_missing(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+
+	testutil.SendToServer(t, connection, "HGET nosuch\n")
+	testutil.MustReadLine(t, reader, "+\n")
+}
+
 func Test_hsetone_requires_key_field_and_value(t *testing.T) {
 	testutil.StartTestServer(t, 4)
 	connection := testutil.ConnectToServer(t)
