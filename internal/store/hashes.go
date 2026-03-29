@@ -86,3 +86,22 @@ func (s *Store) HGetOne(key, field string) (string, error) {
 
 	return value, nil
 }
+
+// HDel removes field from the hash at key. If the hash becomes empty, the key is removed from hashes.
+// If there is no hash at key, it succeeds as a no-op (same key may exist as a string or list).
+func (s *Store) HDel(key, field string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	hash, ok := s.hashes[key]
+	if !ok {
+		return nil
+	}
+
+	delete(hash, field)
+	if len(hash) == 0 {
+		delete(s.hashes, key)
+	}
+
+	return nil
+}

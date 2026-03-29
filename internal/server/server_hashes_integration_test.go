@@ -156,6 +156,86 @@ func Test_hsetone_fails_when_key_is_list(t *testing.T) {
 	testutil.MustReadLine(t, reader, "-key already exists\n")
 }
 
+func Test_hdel_requires_key_and_field(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+
+	testutil.SendToServer(t, connection, "HDEL\n")
+	testutil.MustReadLine(t, reader, "-wrong number of arguments for HDEL. Expecting key field\n")
+
+	testutil.SendToServer(t, connection, "HDEL onlykey\n")
+	testutil.MustReadLine(t, reader, "-wrong number of arguments for HDEL. Expecting key field\n")
+
+	testutil.SendToServer(t, connection, "HDEL onlykey f extra\n")
+	testutil.MustReadLine(t, reader, "-wrong number of arguments for HDEL. Expecting key field\n")
+}
+
+func Test_hdel_ok_when_hash_or_field_missing(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+
+	testutil.SendToServer(t, connection, "HDEL nosuch f\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+
+	testutil.SendToServer(t, connection, "HSET h a 1 b 2\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HDEL h nosuchfield\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HGET h\n")
+	testutil.MustReadLine(t, reader, "+a,1,b,2\n")
+}
+
+func Test_hdel_removes_field_and_drops_empty_hash(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+
+	testutil.SendToServer(t, connection, "HSET h x 1 y 2\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HDEL h x\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HGET h\n")
+	testutil.MustReadLine(t, reader, "+y,2\n")
+
+	testutil.SendToServer(t, connection, "HDEL h y\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HGET h\n")
+	testutil.MustReadLine(t, reader, "+\n")
+
+	testutil.SendToServer(t, connection, "SET h after\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+}
+
+func Test_hdel_is_noop_when_key_is_string_or_list(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t)
+	defer connection.Close()
+
+	reader := bufio.NewReader(connection)
+
+	testutil.SendToServer(t, connection, "SET mykey 1\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HDEL mykey f\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "GET mykey\n")
+	testutil.MustReadLine(t, reader, "+1\n")
+
+	testutil.SendToServer(t, connection, "LPUSH jobs task\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "HDEL jobs f\n")
+	testutil.MustReadLine(t, reader, "+OK\n")
+	testutil.SendToServer(t, connection, "LGET jobs\n")
+	testutil.MustReadLine(t, reader, "+task\n")
+}
+
 func Test_hgetone_requires_key_and_field(t *testing.T) {
 	testutil.StartTestServer(t, 4)
 	connection := testutil.ConnectToServer(t)

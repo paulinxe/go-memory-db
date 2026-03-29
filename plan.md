@@ -297,7 +297,7 @@ Notes:
 - **Parsing:** same style as Phase 1 — `strings.Fields` for the line, `strings.ToUpper` on the verb. Use `strings.Join(parts[i:], " ")` wherever a **tail** must preserve spaces (e.g. `LPUSH` element, `**HSETONE`** value). **Bulk `HSET`** does not join tails per pair: every field and every value must be a **single** token; there must be an **even** number of tokens after the key (`field1 value1 field2 value2 …`). Values containing spaces belong in `**HSETONE`**, not in bulk `HSET`. Quoted arguments (e.g. `"John Doe"`) are **out of scope** until a dedicated lexer is added.
 - **Key errors:** when the line does not supply every key, field, and value the command expects → `-ERR wrong number of arguments for <COMMAND>\n` (match Phase 1 wording).
 - **Unknown / missing keys:** follow Redis-ish behaviour below; use a single consistent `-ERR ...` string per case so tests and telnet sessions stay predictable.
-- **Key type conflicts:** a key can be a string **or** a list **or** a hash, never two at once. **Mutations** (`SET`, `LPUSH`, `HSET`, `HSETONE`, …) must reject cross-type reuse with something like `-ERR WRONGTYPE …\n` by checking the other maps before applying the write. **Pure reads** that target a single type map do **not** cross-check the other maps and do **not** return `WRONGTYPE` when the same name exists as another type: **`LGET`** reads only `lists[key]` (empty list if no list there); **`HGET`** / **`HGETONE`** read only `hashes[key]` (empty hash / `key not found` / `field not found` as documented below — not `WRONGTYPE`).
+- **Key type conflicts:** a key can be a string **or** a list **or** a hash, never two at once. **Mutations** (`SET`, `LPUSH`, `HSET`, `HSETONE`, …) must reject cross-type reuse with something like `-ERR WRONGTYPE …\n` by checking the other maps before applying the write. **Pure reads** that target a single type map do **not** cross-check the other maps and do **not** return `WRONGTYPE` when the same name exists as another type: `**LGET`** reads only `lists[key]` (empty list if no list there); `**HGET**` / `**HGETONE**` read only `hashes[key]` (empty hash / `key not found` / `field not found` as documented below — not `WRONGTYPE`).
 
 ### Protocol examples (lists and hashes)
 
@@ -391,7 +391,7 @@ Exact formatting of `*` multi-bulk lines is your choice as long as it is documen
 
 - **Form:** `HDEL <key> <field>` — one field per invocation for minimal scope; optional extension: multiple fields in one line if you document it.
 - **Behaviour:** delete `field` from hash `key`. If hash becomes empty you may delete the hash key from `hashes` so `KEYS` / type checks stay consistent.
-- **If key is not a hash:** `WRONGTYPE`. If hash missing → `+OK\n` (nothing to delete) or a no-op error — pick one.
+- **If key is not a hash:** If hash missing → `+OK\n` (nothing to delete) or a no-op error — pick one.
 - **Response:** `+OK\n`.
 
 ---

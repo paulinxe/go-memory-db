@@ -234,6 +234,19 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 		}
 
 		printSuccess(writer, value)
+	case "HDEL":
+		if len(tokens) != 3 {
+			printError(writer, "wrong number of arguments for HDEL. Expecting key field")
+			return
+		}
+
+		err := store.HDel(tokens[1], tokens[2])
+		if err != nil {
+			printError(writer, err.Error())
+			return
+		}
+
+		printSuccess(writer, "OK")
 	default:
 		printError(writer, "unknown command")
 	}
