@@ -6,9 +6,9 @@ import (
 )
 
 func printSuccess(w io.Writer, message string) {
-	io.WriteString(w, fmt.Sprintf("+%s\n", message))
+	_, _ = io.WriteString(w, fmt.Sprintf("+%s\n", message))
 }
 
 func printError(w io.Writer, message string) {
-	io.WriteString(w, fmt.Sprintf("-%s\n", message))
+	_, _ = io.WriteString(w, fmt.Sprintf("-%s\n", message))
 }

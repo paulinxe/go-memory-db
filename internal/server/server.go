@@ -115,7 +115,7 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 	command := tokens[0]
 	switch strings.ToUpper(command) {
 	case "PING":
-		io.WriteString(writer, "+PONG\n")
+		_, _ = io.WriteString(writer, "+PONG\n")
 	case "SET":
 		if len(tokens) < 3 {
 			printError(writer, "wrong number of arguments for SET. Expecting key value")
