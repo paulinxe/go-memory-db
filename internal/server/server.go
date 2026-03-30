@@ -8,14 +8,14 @@ import (
 	"strings"
 	"sync"
 
-	"go-memory-db/internal/store"
+	"go-memory-db/internal/db"
 )
 
 // clientSession holds per-client TCP session state: the server and the active namespace store.
 // It becomes useful when switching namespaces.
 type clientSession struct {
 	server *Server
-	store  *store.Store
+	store  *db.Store
 }
 
 // Server is the TCP command server.
@@ -24,7 +24,7 @@ type Server struct {
 	MaxConnections int
 
 	mutex      sync.Mutex // listener field only
-	namespaces *store.NamespaceRegistry
+	namespaces *db.NamespaceRegistry
 	listener   net.Listener // set while Serve is running; Close() clears and closes it
 }
 
@@ -36,7 +36,7 @@ func NewServer(port, maxConnections int) *Server {
 	return &Server{
 		Port:           port,
 		MaxConnections: maxConnections,
-		namespaces:     store.NewNamespaceRegistry(),
+		namespaces:     db.NewNamespaceRegistry(),
 	}
 }
 

@@ -1,4 +1,4 @@
-package store
+package db
 
 func (s *Store) Set(key, value string) error {
 	s.mutex.Lock()

@@ -1,4 +1,4 @@
-package store
+package db
 
 // LPush appends a single value to the list at key.
 func (s *Store) LPush(key, value string) error {

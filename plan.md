@@ -151,7 +151,7 @@ Key decisions:
 - Each handler validates that all required keys (and other tokens) are present and writes `-ERR wrong number of arguments for X\n` if not
 - `SET` values support spaces: `SET mykey hello world` stores `"hello world"` via `strings.Join(parts[2:], " ")`
 
-### The store — Phase 1
+### The `db` package — Phase 1
 
 Phase 1 only needs strings. Start minimal — lists and hashes are added in Phase 2:
 
@@ -201,7 +201,7 @@ Notes:
 
 - `defer` on unlock is idiomatic — ensures the lock is always released even on panic
 - `Keys` copies the slice under the lock; map iteration order is random, sort after the lock if needed
-- In Phase 3, the server holds a **registry** `map[string]*store.Store` (one store per namespace name); a dedicated `Namespace` wrapper type is optional until Phase 5–6 when TTL and pub/sub attach more than a `Store` per logical database
+- In Phase 3, the server holds a **registry** `map[string]*db.Store` (one `Store` per namespace name); a dedicated `Namespace` wrapper type is optional until Phase 5–6 when TTL and pub/sub attach more than a `Store` per logical database
 
 The `Server` struct for Phase 1:
 
@@ -209,7 +209,7 @@ The `Server` struct for Phase 1:
 type Server struct {
     listener net.Listener
     sem      chan struct{}  // semaphore, capacity = maxConns
-    store    Store
+    store    *db.Store
 }
 ```
 
@@ -396,7 +396,7 @@ Exact formatting of `*` multi-bulk lines is your choice as long as it is documen
 
 ---
 
-### The store — `sync.RWMutex`
+### The `db` package — `sync.RWMutex`
 
 Same locking idea as Phase 1: many concurrent readers, writers exclusive. Add `lists` (`map[string][]string`) and `hashes` (`map[string]map[string]string`):
 
@@ -417,7 +417,7 @@ List and hash handlers use `RLock` for pure reads (`HGET`, `HGETONE`, `LGET`) an
 
 **Deferred to Phase 5 (TTL):** the `expiry` map, `isExpired`, and lazy TTL checks on read. Mixing that here blurs “new value shapes” with “time-based eviction.”
 
-`Server` is still the Phase 1 shape (`store Store` only). Namespace switching arrives next.
+`Server` is still the Phase 1 shape (`store *db.Store` only). Namespace switching arrives next.
 
 ---
 
@@ -427,10 +427,10 @@ List and hash handlers use `RLock` for pure reads (`HGET`, `HGETONE`, `LGET`) an
 
 ### What to build
 
-- **`CNAMESPACE`** — create a new namespace (new `*store.Store` registered under a name). Serialize inserts with a **write lock** (or read-then-upgrade with a **double-check** under the write lock) so two concurrent creators for the same name cannot clobber each other.
+- **`CNAMESPACE`** — create a new namespace (new `*db.Store` registered under a name). Serialize inserts with a **write lock** (or read-then-upgrade with a **double-check** under the write lock) so two concurrent creators for the same name cannot clobber each other.
 - **`USE`** — switch this connection to an **existing** namespace only (lookup under read lock). If the name is missing, return an error — **do not** auto-create on `USE`.
-- **`map[string]*store.Store`** on the server (registry), protected by `sync.RWMutex`.
-- **`clientSession`** — small struct per connected client (one per `handleConnection` goroutine) holding `srv *Server` and `store *store.Store` (the active namespace’s store). Data commands use `session.store`. **`USE`** updates `session.store` when switching namespaces. **`CNAMESPACE` does not** change the active store — the client must **`USE`** to point the connection at the new namespace.
+- **`map[string]*db.Store`** on the server (registry), protected by `sync.RWMutex`.
+- **`clientSession`** — small struct per connected client (one per `handleConnection` goroutine) holding `srv *Server` and `store *db.Store` (the active namespace’s store). Data commands use `session.store`. **`USE`** updates `session.store` when switching namespaces. **`CNAMESPACE` does not** change the active store — the client must **`USE`** to point the connection at the new namespace.
 - **`DNAMESPACE`** (remove a namespace) is **Phase 4** — not part of Phase 3.
 
 ### Protocol additions
@@ -450,12 +450,12 @@ List and hash handlers use `RLock` for pure reads (`HGET`, `HGETONE`, `LGET`) an
 
 ### Registry and `CNAMESPACE` (double-check)
 
-Each namespace is an isolated `Store`. Later phases add TTL and pub/sub **per logical database** — you may introduce `type Namespace struct { Store *store.Store; ... }` then; for Phase 3 the map values can stay bare `*store.Store`.
+Each namespace is an isolated `Store`. Later phases add TTL and pub/sub **per logical database** — you may introduce `type Namespace struct { Store *db.Store; ... }` then; for Phase 3 the map values can stay bare `*db.Store`.
 
 ```go
 type Server struct {
     mu          sync.RWMutex
-    namespaces  map[string]*store.Store
+    namespaces  map[string]*db.Store
 }
 
 // createNamespace registers name → new store. Idempotent: if name already exists, no-op (handler still returns +OK).
@@ -465,7 +465,7 @@ func (s *Server) createNamespace(name string) error {
     if _, ok := s.namespaces[name]; ok {
         return nil
     }
-    s.namespaces[name] = store.NewStore()
+    s.namespaces[name] = db.NewStore()
     return nil
 }
 ```
@@ -476,12 +476,12 @@ For **`USE`**, take `RLock`, read `s.namespaces[name]`, `RUnlock`; if missing, `
 
 ### Client session — `clientSession`
 
-Reassigning the “current store” must be visible to the **next** command on the same TCP connection. Passing `*store.Store` alone into `handleCommand` by value does **not** work: assigning a new store inside the handler only updates a local copy. Use a **small struct** on the heap, one per connection:
+Reassigning the “current store” must be visible to the **next** command on the same TCP connection. Passing `*db.Store` alone into `handleCommand` by value does **not** work: assigning a new store inside the handler only updates a local copy. Use a **small struct** on the heap, one per connection:
 
 ```go
 type clientSession struct {
     srv   *Server
-    store *store.Store
+    store *db.Store
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
@@ -504,7 +504,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 ### Example — `USE my_app` (swap the active store)
 
-Assume `my_app` already exists in `namespaces` (someone ran `CNAMESPACE my_app` earlier). The client sends `USE my_app`. The handler must **look up** that name under the registry lock, then **assign** to `session.store`. That mutates the heap-allocated `clientSession` for this goroutine only — the next `SET` / `GET` on the same TCP connection go through `my_app`’s `*store.Store`, while other connections are unaffected.
+Assume `my_app` already exists in `namespaces` (someone ran `CNAMESPACE my_app` earlier). The client sends `USE my_app`. The handler must **look up** that name under the registry lock, then **assign** to `session.store`. That mutates the heap-allocated `clientSession` for this goroutine only — the next `SET` / `GET` on the same TCP connection go through `my_app`’s `*db.Store`, while other connections are unaffected.
 
 ```go
 // inside handleCommand(conn net.Conn, line string, session *clientSession), USE branch
@@ -527,7 +527,7 @@ case "USE":
     printSuccess(conn, "OK")
 ```
 
-`USE default` is the same pattern: lookup `"default"` in the map and assign its `*store.Store` to `session.store` (no special case beyond the name string).
+`USE default` is the same pattern: lookup `"default"` in the map and assign its `*db.Store` to `session.store` (no special case beyond the name string).
 
 ### Example — `CNAMESPACE` (register only, no session swap)
 
@@ -547,16 +547,16 @@ case "CNAMESPACE":
     printSuccess(conn, "OK")
 ```
 
-All handlers take `*clientSession`. **`USE`** sets `session.store` to the resolved `*store.Store`. **`CNAMESPACE`** never changes `session.store` — only the registry. **`SET` / `GET` / …** use `session.store` only. **PING** ignores `session.store`. Nothing on `Server` stores “current namespace” globally — only inside each session.
+All handlers take `*clientSession`. **`USE`** sets `session.store` to the resolved `*db.Store`. **`CNAMESPACE`** never changes `session.store` — only the registry. **`SET` / `GET` / …** use `session.store` only. **PING** ignores `session.store`. Nothing on `Server` stores “current namespace” globally — only inside each session.
 
 ### What else has to change (ripple effects)
 
-Phase 3 is not only new verbs plus a map: every code path that today assumes one global `*store.Store` must route through **`session.store`**.
+Phase 3 is not only new verbs plus a map: every code path that today assumes one global `*db.Store` must route through **`session.store`**.
 
 #### Default namespace
 
 - Use a fixed name (e.g. `default`) so clients and integration tests work **without** sending `USE` first.
-- **Initialize it explicitly in `NewServer`:** insert `default` → `store.NewStore()` into `namespaces` before `Serve`. Each `handleConnection` seeds `clientSession.store` by taking **`RLock`**, reading `namespaces["default"]`, then **`RUnlock`** (see snippet above).
+- **Initialize it explicitly in `NewServer`:** insert `default` → `db.NewStore()` into `namespaces` before `Serve`. Each `handleConnection` seeds `clientSession.store` by taking **`RLock`**, reading `namespaces["default"]`, then **`RUnlock`** (see snippet above).
 - Treat `default` like any other name at runtime (`USE default` is valid); the only special behaviour is **pre-creation** and **initial** `session.store` on connect.
 
 #### `USE` / `CNAMESPACE` semantics
@@ -570,12 +570,12 @@ Phase 3 is not only new verbs plus a map: every code path that today assumes one
 - **Case sensitivity:** **Case-sensitive** — `db1` and `DB1` are different namespaces.
 - **`USE` when the name is missing from the registry:** `-ERR namespace does not exist` (exact message for this case).
 - **`USE` idempotency:** `USE db1` twice returns `+OK` if `db1` exists.
-- **`CNAMESPACE` idempotency:** if the namespace **already exists** (including **`default`**, which `NewServer` pre-inserts), return `+OK` and **do not** replace the existing `*store.Store`.
+- **`CNAMESPACE` idempotency:** if the namespace **already exists** (including **`default`**, which `NewServer` pre-inserts), return `+OK` and **do not** replace the existing `*db.Store`.
 
 #### `Server` struct and constructor
 
-- Remove the flat **`Store *store.Store`** field; replace with **`namespaces map[string]*store.Store`** and **`mu sync.RWMutex`**.
-- **`NewServer`** registers **`default`** with a fresh `store.NewStore()` up front. Other names appear only via **`CNAMESPACE`**.
+- Remove the flat **`Store *db.Store`** field; replace with **`namespaces map[string]*db.Store`** and **`mu sync.RWMutex`**.
+- **`NewServer`** registers **`default`** with a fresh `db.NewStore()` up front. Other names appear only via **`CNAMESPACE`**.
 - **No `context.Context` on `Server` in Phase 3.** Introduce a root context when you add per-namespace TTL daemons (Phase 5) and wire cancellation into graceful shutdown (Phase 7).
 
 #### Command routing refactor
@@ -583,7 +583,7 @@ Phase 3 is not only new verbs plus a map: every code path that today assumes one
 - **`handleCommand(conn, line, session *clientSession)`** — thread `session` from `handleConnection`; all data commands use `session.store`.
 - **`PING`** does not need the registry. Registry mutations use `session.srv` and appropriate locking.
 
-#### Store package (`internal/store`)
+#### DB package (`internal/db`)
 
 - **No semantic change** to `Store`: one instance per namespace. `Del` / `WRONGTYPE` / list+hash behaviour stay as in Phase 2.
 
@@ -601,13 +601,13 @@ Phase 3 is not only new verbs plus a map: every code path that today assumes one
 
 - **Phase 4:** `DNAMESPACE` — remove namespaces from the registry (see next section).
 - **Phase 5 (TTL):** attach expiry and ticker **per namespace** (per `*Store` or per future `Namespace` struct holding that store).
-- **Phase 6 (pub/sub):** **per-namespace `Broker`** matches the Phase 1 diagram; introduce a wrapper struct when you need more than `*store.Store` per map entry.
+- **Phase 6 (pub/sub):** **per-namespace `Broker`** matches the Phase 1 diagram; introduce a wrapper struct when you need more than `*db.Store` per map entry.
 
 ---
 
 ## Phase 4 — Namespace deletion
 
-**Goal:** remove a logical database from the registry so its name can be reused and its `*store.Store` can be dropped when nothing references it.
+**Goal:** remove a logical database from the registry so its name can be reused and its `*db.Store` can be dropped when nothing references it.
 
 ### What to build
 
@@ -628,11 +628,11 @@ Phase 3 is not only new verbs plus a map: every code path that today assumes one
 
 - **`default`:** **reject deletion** (recommended) — `DNAMESPACE default` → `-ERR` so there is always at least one namespace and existing clients always have a valid bootstrap target.
 - **Unknown name:** `-ERR namespace does not exist` (same exact string as `USE` when the name is not in the registry).
-- **Clients still attached:** connections may still hold `session.store` pointing at the old `*store.Store` after the name is removed from the map. Decide and document one approach:
+- **Clients still attached:** connections may still hold `session.store` pointing at the old `*db.Store` after the name is removed from the map. Decide and document one approach:
   - **Simple:** allow it — the store is orphaned but still usable until those connections `USE` something else or disconnect; the name is gone so `USE db1` fails for new lookups, but old pointers stay valid; or
   - **Stricter:** treat subsequent commands on that session as errors until `USE` / reconnect (requires detecting “store no longer registered,” e.g. generation IDs or scanning — more work).
-- **Concurrent `USE` / `RLock` readers:** deleting must happen under **`Lock`**. A connection doing `USE` under `RLock` may still resolve a pointer just before delete; that is OK if you only remove the map entry and let the `*store.Store` live until the last goroutine drops it. Do **not** delete from the map while holding only `RLock`.
-- **Phase 5+:** when TTL daemons or brokers exist per namespace, `DNAMESPACE` must **stop** those goroutines and release resources — sketch that when you add Phase 5–6; for Phase 4 only the map and `*store.Store` lifetime matter.
+- **Concurrent `USE` / `RLock` readers:** deleting must happen under **`Lock`**. A connection doing `USE` under `RLock` may still resolve a pointer just before delete; that is OK if you only remove the map entry and let the `*db.Store` live until the last goroutine drops it. Do **not** delete from the map while holding only `RLock`.
+- **Phase 5+:** when TTL daemons or brokers exist per namespace, `DNAMESPACE` must **stop** those goroutines and release resources — sketch that when you add Phase 5–6; for Phase 4 only the map and `*db.Store` lifetime matter.
 
 ### Tests
 
