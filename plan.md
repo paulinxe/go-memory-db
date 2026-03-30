@@ -201,7 +201,7 @@ Notes:
 
 - `defer` on unlock is idiomatic — ensures the lock is always released even on panic
 - `Keys` copies the slice under the lock; map iteration order is random, sort after the lock if needed
-- In Phase 3, `Store` moves inside a `Namespace` struct — designing it as its own type now makes that refactor trivial
+- In Phase 3, the server holds a **registry** `map[string]*store.Store` (one store per namespace name); a dedicated `Namespace` wrapper type is optional until Phase 5–6 when TTL and pub/sub attach more than a `Store` per logical database
 
 The `Server` struct for Phase 1:
 
@@ -415,7 +415,7 @@ String `Get` / `Set` / `Del` stay as in Phase 1 **but** `DEL` and any “exists?
 
 List and hash handlers use `RLock` for pure reads (`HGET`, `HGETONE`, `LGET`) and `Lock` for mutations (`LPUSH`, `LPOP`, `HSET`, `HSETONE`, `HDEL`), all held for the shortest coherent section (no I/O under the lock).
 
-**Deferred to Phase 4:** the `expiry` map, `isExpired`, and lazy TTL checks on read. Mixing that here blurs “new value shapes” with “time-based eviction.”
+**Deferred to Phase 5 (TTL):** the `expiry` map, `isExpired`, and lazy TTL checks on read. Mixing that here blurs “new value shapes” with “time-based eviction.”
 
 `Server` is still the Phase 1 shape (`store Store` only). Namespace switching arrives next.
 
@@ -423,58 +423,235 @@ List and hash handlers use `RLock` for pure reads (`HGET`, `HGETONE`, `LGET`) an
 
 ## Phase 3 — Namespaces
 
-**Goal:** multiple clients attached to different logical databases, with a race-free registry.
+**Goal:** multiple clients attached to different logical databases, with a race-free registry and explicit create vs switch commands.
 
 ### What to build
 
-- `USE` command — per-connection namespace switching
-- `map[string]*Namespace` on the server; double-check pattern in `getOrCreate`
-- Each `Namespace` wraps a `Store` (and later a TTL daemon and pub/sub `Broker` in Phases 4 and 5)
+- **`CNAMESPACE`** — create a new namespace (new `*store.Store` registered under a name). Serialize inserts with a **write lock** (or read-then-upgrade with a **double-check** under the write lock) so two concurrent creators for the same name cannot clobber each other.
+- **`USE`** — switch this connection to an **existing** namespace only (lookup under read lock). If the name is missing, return an error — **do not** auto-create on `USE`.
+- **`map[string]*store.Store`** on the server (registry), protected by `sync.RWMutex`.
+- **`connSession`** — small per-connection struct holding `srv *Server` and `store *store.Store` (the active namespace’s store). One instance per `handleConnection` goroutine; data commands use `session.store`. **`USE`** updates `session.store` when switching namespaces. **`CNAMESPACE` does not** change the active store — the client must **`USE`** to point the connection at the new namespace.
+- **`DNAMESPACE`** (remove a namespace) is **Phase 4** — not part of Phase 3.
 
 ### Protocol additions
 
 ```
+→  CNAMESPACE db1
+←  +OK
+
 →  USE db1
-←  +OK                      ← switched namespace
+←  +OK                      ← switched to existing namespace
+
+→  USE missing
+←  -ERR namespace does not exist
 ```
 
-### Namespace switching
+**Create vs switch:** **`CNAMESPACE` only registers** a new name in the map (or is idempotent if it already exists — see below). It **does not** change this connection’s `session.store`. To use data in that namespace, the client must send **`USE <name>`** afterward.
 
-Each namespace is an isolated `Store` + (later) `Broker` + TTL daemon. The namespace registry itself needs protection:
+### Registry and `CNAMESPACE` (double-check)
+
+Each namespace is an isolated `Store`. Later phases add TTL and pub/sub **per logical database** — you may introduce `type Namespace struct { Store *store.Store; ... }` then; for Phase 3 the map values can stay bare `*store.Store`.
 
 ```go
 type Server struct {
-    mu         sync.RWMutex
-    namespaces map[string]*Namespace
-    ctx        context.Context
-    cancel     context.CancelFunc
+    mu          sync.RWMutex
+    namespaces  map[string]*store.Store
 }
 
-func (s *Server) getOrCreate(name string) *Namespace {
-    s.mu.RLock()
-    ns, ok := s.namespaces[name]
-    s.mu.RUnlock()
-    if ok {
-        return ns  // fast path — no write lock needed
-    }
-
+// createNamespace registers name → new store. Idempotent: if name already exists, no-op (handler still returns +OK).
+func (s *Server) createNamespace(name string) error {
     s.mu.Lock()
     defer s.mu.Unlock()
-    // double-check after acquiring write lock
-    if ns, ok = s.namespaces[name]; ok {
-        return ns  // another goroutine created it while we waited
+    if _, ok := s.namespaces[name]; ok {
+        return nil
     }
-    ns = newNamespace(s.ctx)
-    s.namespaces[name] = ns
-    return ns
+    s.namespaces[name] = store.NewStore()
+    return nil
 }
 ```
 
-The double-check pattern is important — between releasing the read lock and acquiring the write lock, another goroutine may have created the namespace. Without the second check you'd overwrite it.
+If two goroutines race `CNAMESPACE foo`, the mutex **serializes** them: the first inserts; the second sees an existing entry and returns idempotently. The version above does **everything under `Lock`**, so no double-check is required inside `createNamespace`. 
+
+For **`USE`**, take `RLock`, read `s.namespaces[name]`, `RUnlock`; if missing, `-ERR`. No write lock, no creation.
+
+### Per-connection state — `connSession`
+
+Reassigning the “current store” must be visible to the **next** command on the same TCP connection. Passing `*store.Store` alone into `handleCommand` by value does **not** work: assigning a new store inside the handler only updates a local copy. Use a **small struct** on the heap, one per connection:
+
+```go
+type connSession struct {
+    srv   *Server
+    store *store.Store
+}
+
+func (s *Server) handleConnection(conn net.Conn) {
+    s.mu.RLock()
+    defaultStore := s.namespaces["default"]
+    s.mu.RUnlock()
+
+    session := &connSession{
+        srv:   s,
+        store: defaultStore,
+    }
+    scanner := bufio.NewScanner(conn)
+    for scanner.Scan() {
+        handleCommand(conn, scanner.Text(), session)
+    }
+}
+```
+
+**Chosen approach:** seed each connection with **`RLock` → read `namespaces["default"]` → `RUnlock`**, as in the snippet above (same mutex as `USE` / `CNAMESPACE`). **Why not pass the map into `handleConnection` and read `mapping["default"]` without locking?** It is still the shared map; concurrent read while another goroutine writes (e.g. `CNAMESPACE`) is a **data race** in Go. Passing the map as an argument does not change that — you must hold `RLock` for the lookup either way. A helper like `storeForDefault()` is optional sugar around those three lines.
+
+### Example — `USE my_app` (swap the active store)
+
+Assume `my_app` already exists in `namespaces` (someone ran `CNAMESPACE my_app` earlier). The client sends `USE my_app`. The handler must **look up** that name under the registry lock, then **assign** to `session.store`. That mutates the heap-allocated `connSession` for this goroutine only — the next `SET` / `GET` on the same TCP connection go through `my_app`’s `*store.Store`, while other connections are unaffected.
+
+```go
+// inside handleCommand(conn net.Conn, line string, session *connSession), USE branch
+case "USE":
+    if len(tokens) != 2 {
+        printError(conn, "wrong number of arguments for USE. Expecting name")
+        return
+    }
+    name := tokens[1]
+    if err := validateNamespaceName(name); err != nil {
+        printError(conn, err.Error())
+        return
+    }
+
+    session.srv.mu.RLock()
+    st, ok := session.srv.namespaces[name]
+    session.srv.mu.RUnlock()
+    if !ok {
+        printError(conn, "namespace does not exist")
+        return
+    }
+
+    session.store = st // swap — same session struct, new active store
+    printSuccess(conn, "OK")
+```
+
+`USE default` is the same pattern: lookup `"default"` in the map and assign its `*store.Store` to `session.store` (no special case beyond the name string).
+
+### Example — `CNAMESPACE` (register only, no session swap)
+
+Validate the name (non-empty, `len(name) <= 64`), call `createNamespace` (idempotent under lock), return `+OK`. **Do not** assign `session.store`.
+
+```go
+case "CNAMESPACE":
+    if len(tokens) != 2 {
+        printError(conn, "wrong number of arguments for CNAMESPACE. Expecting name")
+        return
+    }
+    name := tokens[1]
+    if err := validateNamespaceName(name); err != nil {
+        printError(conn, err.Error())
+        return
+    }
+    if err := session.srv.createNamespace(name); err != nil {
+        printError(conn, err.Error())
+        return
+    }
+    printSuccess(conn, "OK")
+```
+
+`validateNamespaceName` can return errors such as `invalid namespace name` (empty) and `namespace name too long` (`len(name) > 64`).
+
+All handlers take `*connSession`. **`USE`** sets `session.store` to the resolved `*store.Store`. **`CNAMESPACE`** never changes `session.store` — only the registry. **`SET` / `GET` / …** use `session.store` only. **PING** ignores `session.store`. Nothing on `Server` stores “current namespace” globally — only inside each session.
+
+### What else has to change (ripple effects)
+
+Phase 3 is not only new verbs plus a map: every code path that today assumes one global `*store.Store` must route through **`session.store`**.
+
+#### Default namespace
+
+- Use a fixed name (e.g. `default`) so clients and integration tests work **without** sending `USE` first.
+- **Initialize it explicitly in `NewServer`:** insert `default` → `store.NewStore()` into `namespaces` before `Serve`. Each `handleConnection` seeds `connSession.store` by taking **`RLock`**, reading `namespaces["default"]`, then **`RUnlock`** (see snippet above).
+- Treat `default` like any other name at runtime (`USE default` is valid); the only special behaviour is **pre-creation** and **initial** `session.store` on connect.
+
+#### `USE` / `CNAMESPACE` semantics
+
+- **Arity:** `USE <name>` and `CNAMESPACE <name>` — exactly one name token; otherwise `wrong number of arguments for …` (match existing command style).
+- **Name validation (shared by `USE` and `CNAMESPACE`):**
+  - **Non-empty** after parsing — empty token → `-ERR invalid namespace name`.
+  - **Max length 64 bytes** — in Go use `len(name)` (UTF-8 **byte** length, not rune count). Reject if `len(name) > 64` with `-ERR namespace name too long`. Multi-byte UTF-8 characters count as several bytes toward that limit.
+  - With `strings.Fields`, the name is a **single** token, so embedded spaces are impossible; no extra rule needed unless you add quoted strings later.
+- **Case sensitivity:** **Case-sensitive** — `db1` and `DB1` are different namespaces.
+- **`USE` when the name is missing from the registry:** `-ERR namespace does not exist` (exact message for this case).
+- **`USE` idempotency:** `USE db1` twice returns `+OK` if `db1` exists.
+- **`CNAMESPACE` idempotency:** if the namespace **already exists** (including **`default`**, which `NewServer` pre-inserts), return `+OK` and **do not** replace the existing `*store.Store`.
+
+#### `Server` struct and constructor
+
+- Remove the flat **`Store *store.Store`** field; replace with **`namespaces map[string]*store.Store`** and **`mu sync.RWMutex`**.
+- **`NewServer`** registers **`default`** with a fresh `store.NewStore()` up front. Other names appear only via **`CNAMESPACE`**.
+- **No `context.Context` on `Server` in Phase 3.** Introduce a root context when you add per-namespace TTL daemons (Phase 5) and wire cancellation into graceful shutdown (Phase 7).
+
+#### Command routing refactor
+
+- **`handleCommand(conn, line, session *connSession)`** — thread `session` from `handleConnection`; all data commands use `session.store`.
+- **`PING`** does not need the registry. Registry mutations use `session.srv` and appropriate locking.
+
+#### Store package (`internal/store`)
+
+- **No semantic change** to `Store`: one instance per namespace. `Del` / `WRONGTYPE` / list+hash behaviour stay as in Phase 2.
+
+#### Tests and tooling
+
+- **Integration tests** implicitly use **`default`** unless the test sends `USE` / `CNAMESPACE`.
+- **New tests:** two connections, `CNAMESPACE a` then `USE a` / `CNAMESPACE b` then `USE b`, same key different values; concurrent `CNAMESPACE same` + `-race` (idempotent); `USE` missing name → `namespace does not exist`; duplicate `CNAMESPACE` → `+OK` without wiping data.
+- **`internal/server/testutil`:** unchanged API is fine if behaviour defaults to **`default`**.
+
+#### `cmd/server/main.go`
+
+- Usually **unchanged** — `NewServer` + `Serve`.
+
+#### How this sets up later phases
+
+- **Phase 4:** `DNAMESPACE` — remove namespaces from the registry (see next section).
+- **Phase 5 (TTL):** attach expiry and ticker **per namespace** (per `*Store` or per future `Namespace` struct holding that store).
+- **Phase 6 (pub/sub):** **per-namespace `Broker`** matches the Phase 1 diagram; introduce a wrapper struct when you need more than `*store.Store` per map entry.
 
 ---
 
-## Phase 4 — TTL expiry
+## Phase 4 — Namespace deletion
+
+**Goal:** remove a logical database from the registry so its name can be reused and its `*store.Store` can be dropped when nothing references it.
+
+### What to build
+
+- **`DNAMESPACE <name>`** — delete the namespace entry from `namespaces` under the registry **write lock**.
+- Clear rules for **edge cases** (see below); cover them with tests and `-race`.
+
+### Protocol addition
+
+```
+→  DNAMESPACE db1
+←  +OK
+
+→  DNAMESPACE db1
+←  -ERR namespace does not exist   ← already gone (same message as `USE` on a missing name)
+```
+
+### Semantics and design choices
+
+- **`default`:** **reject deletion** (recommended) — `DNAMESPACE default` → `-ERR` so there is always at least one namespace and existing clients always have a valid bootstrap target.
+- **Unknown name:** `-ERR namespace does not exist` (same exact string as `USE` when the name is not in the registry).
+- **Clients still attached:** connections may still hold `session.store` pointing at the old `*store.Store` after the name is removed from the map. Decide and document one approach:
+  - **Simple:** allow it — the store is orphaned but still usable until those connections `USE` something else or disconnect; the name is gone so `USE db1` fails for new lookups, but old pointers stay valid; or
+  - **Stricter:** treat subsequent commands on that session as errors until `USE` / reconnect (requires detecting “store no longer registered,” e.g. generation IDs or scanning — more work).
+- **Concurrent `USE` / `RLock` readers:** deleting must happen under **`Lock`**. A connection doing `USE` under `RLock` may still resolve a pointer just before delete; that is OK if you only remove the map entry and let the `*store.Store` live until the last goroutine drops it. Do **not** delete from the map while holding only `RLock`.
+- **Phase 5+:** when TTL daemons or brokers exist per namespace, `DNAMESPACE` must **stop** those goroutines and release resources — sketch that when you add Phase 5–6; for Phase 4 only the map and `*store.Store` lifetime matter.
+
+### Tests
+
+- `DNAMESPACE` removes name; `USE` that name afterwards fails.
+- `DNAMESPACE default` rejected (if you adopt that rule).
+- Concurrent `DNAMESPACE` + `CNAMESPACE` / `USE` on the same or different names under `-race`.
+
+---
+
+## Phase 5 — TTL expiry
 
 **Goal:** `SET foo bar` → `EXPIRE foo 5` → wait 6 seconds → `GET foo` returns nothing.
 
@@ -563,7 +740,7 @@ Worth thinking about: why does `evictExpired` need a write lock even though it's
 
 ---
 
-## Phase 5 — Pub/sub
+## Phase 6 — Pub/sub
 
 **Goal:** three `telnet` sessions — two subscribers, one publisher — messages fan out in real time.
 
@@ -651,7 +828,7 @@ This goroutine is now dedicated to pushing messages — it can't handle other co
 
 ---
 
-## Phase 6 — Graceful shutdown and hardening
+## Phase 7 — Graceful shutdown and hardening
 
 **Goal:** clean shutdown under load, zero race conditions, no goroutine leaks.
 
@@ -709,13 +886,35 @@ Run `go run -race main.go` throughout. Treat every race warning as a failing tes
 
 ---
 
+## Phase 8 — Store sharding
+
+**Goal:** replace the single `sync.RWMutex` inside each `Store` with N independent shards, each with its own mutex, and measure whether contention actually drops.
+
+### What to build
+
+- Fixed shard array (e.g. N=16) inside `Store`, each shard holding its own sub-map and `sync.RWMutex`
+- A hash function (`fnv32(key) % N`) to route every key operation to the right shard
+- Fix `KEYS` and TTL eviction — both now need to sweep all shards
+- `go test -bench` before and after to confirm the improvement is real, not assumed
+
+### Why this is worth doing
+
+- **Lock granularity is a recurring design question** in any high-throughput backend. Sharding teaches you to reason about it concretely rather than by intuition.
+- **Benchmarking discipline.** You'll need `go test -bench` with concurrent goroutines and `go tool pprof` to see mutex contention — skills that transfer directly to real production work.
+- **Cross-shard atomicity is a trap.** The moment you try to do something atomic across two keys on different shards, you hit a fundamental problem. Discovering it here — at small scale — is exactly how you build intuition for why Redis Cluster has hash tags and why distributed transactions are hard.
+- **It closes the loop with Redis.** Redis uses a similar fixed-slot approach (16384 hash slots). Having built something analogous yourself makes reading Redis Cluster internals feel familiar rather than opaque.
+
+The interesting design question to sit with: `KEYS` currently locks the whole store. With sharding, you must lock and scan each shard in turn — what consistency guarantees does that give you, and does it matter?
+
+---
+
 ## Questions to sit with
 
 As you build, you'll hit these. Don't look up the answers immediately — sit with them first:
 
 - Why does `Publish` need only a read lock even though it's writing to subscriber channels?
 - What happens if a subscriber's goroutine panics — how do you prevent it from taking down the whole server?
-- If two clients both `USE db1` simultaneously on a cold start, what goes wrong without the double-check?
+- If two clients both run `CNAMESPACE db1` at the same time on a cold start, what goes wrong if creation is not fully serialized (or double-checked under the write lock)?
 - A subscribed client disconnects without sending `UNSUBSCRIBE` — how do you detect this and clean up?
 
 That last one is particularly interesting. You'll need to detect a broken TCP connection from the push goroutine and trigger cleanup. Think about how `context` and the write error from `fmt.Fprintf` can work together here.
