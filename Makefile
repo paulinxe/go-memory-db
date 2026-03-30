@@ -1,6 +1,6 @@
 # Local development via Docker Compose (see compose.yaml).
 # Ctrl+C stops the stack; the container is kept. Run `make down` to remove it.
-.PHONY: build run down test lint
+.PHONY: build dev run down test lint
 
 # To be run from the host machine.
 build:
