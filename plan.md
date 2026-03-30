@@ -430,7 +430,7 @@ List and hash handlers use `RLock` for pure reads (`HGET`, `HGETONE`, `LGET`) an
 - **`CNAMESPACE`** — create a new namespace (new `*store.Store` registered under a name). Serialize inserts with a **write lock** (or read-then-upgrade with a **double-check** under the write lock) so two concurrent creators for the same name cannot clobber each other.
 - **`USE`** — switch this connection to an **existing** namespace only (lookup under read lock). If the name is missing, return an error — **do not** auto-create on `USE`.
 - **`map[string]*store.Store`** on the server (registry), protected by `sync.RWMutex`.
-- **`connSession`** — small per-connection struct holding `srv *Server` and `store *store.Store` (the active namespace’s store). One instance per `handleConnection` goroutine; data commands use `session.store`. **`USE`** updates `session.store` when switching namespaces. **`CNAMESPACE` does not** change the active store — the client must **`USE`** to point the connection at the new namespace.
+- **`clientSession`** — small struct per connected client (one per `handleConnection` goroutine) holding `srv *Server` and `store *store.Store` (the active namespace’s store). Data commands use `session.store`. **`USE`** updates `session.store` when switching namespaces. **`CNAMESPACE` does not** change the active store — the client must **`USE`** to point the connection at the new namespace.
 - **`DNAMESPACE`** (remove a namespace) is **Phase 4** — not part of Phase 3.
 
 ### Protocol additions
@@ -474,12 +474,12 @@ If two goroutines race `CNAMESPACE foo`, the mutex **serializes** them: the firs
 
 For **`USE`**, take `RLock`, read `s.namespaces[name]`, `RUnlock`; if missing, `-ERR`. No write lock, no creation.
 
-### Per-connection state — `connSession`
+### Client session — `clientSession`
 
 Reassigning the “current store” must be visible to the **next** command on the same TCP connection. Passing `*store.Store` alone into `handleCommand` by value does **not** work: assigning a new store inside the handler only updates a local copy. Use a **small struct** on the heap, one per connection:
 
 ```go
-type connSession struct {
+type clientSession struct {
     srv   *Server
     store *store.Store
 }
@@ -489,7 +489,7 @@ func (s *Server) handleConnection(conn net.Conn) {
     defaultStore := s.namespaces["default"]
     s.mu.RUnlock()
 
-    session := &connSession{
+    session := &clientSession{
         srv:   s,
         store: defaultStore,
     }
@@ -504,20 +504,16 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 ### Example — `USE my_app` (swap the active store)
 
-Assume `my_app` already exists in `namespaces` (someone ran `CNAMESPACE my_app` earlier). The client sends `USE my_app`. The handler must **look up** that name under the registry lock, then **assign** to `session.store`. That mutates the heap-allocated `connSession` for this goroutine only — the next `SET` / `GET` on the same TCP connection go through `my_app`’s `*store.Store`, while other connections are unaffected.
+Assume `my_app` already exists in `namespaces` (someone ran `CNAMESPACE my_app` earlier). The client sends `USE my_app`. The handler must **look up** that name under the registry lock, then **assign** to `session.store`. That mutates the heap-allocated `clientSession` for this goroutine only — the next `SET` / `GET` on the same TCP connection go through `my_app`’s `*store.Store`, while other connections are unaffected.
 
 ```go
-// inside handleCommand(conn net.Conn, line string, session *connSession), USE branch
+// inside handleCommand(conn net.Conn, line string, session *clientSession), USE branch
 case "USE":
     if len(tokens) != 2 {
         printError(conn, "wrong number of arguments for USE. Expecting name")
         return
     }
     name := tokens[1]
-    if err := validateNamespaceName(name); err != nil {
-        printError(conn, err.Error())
-        return
-    }
 
     session.srv.mu.RLock()
     st, ok := session.srv.namespaces[name]
@@ -535,7 +531,7 @@ case "USE":
 
 ### Example — `CNAMESPACE` (register only, no session swap)
 
-Validate the name (non-empty, `len(name) <= 64`), call `createNamespace` (idempotent under lock), return `+OK`. **Do not** assign `session.store`.
+Call `createNamespace` (idempotent under lock), which **validates** the name (non-empty, `len(name) <= 64`) and returns `-ERR` for `invalid namespace name` or `namespace name too long` as needed. Return `+OK` on success. **Do not** assign `session.store`.
 
 ```go
 case "CNAMESPACE":
@@ -544,10 +540,6 @@ case "CNAMESPACE":
         return
     }
     name := tokens[1]
-    if err := validateNamespaceName(name); err != nil {
-        printError(conn, err.Error())
-        return
-    }
     if err := session.srv.createNamespace(name); err != nil {
         printError(conn, err.Error())
         return
@@ -555,9 +547,7 @@ case "CNAMESPACE":
     printSuccess(conn, "OK")
 ```
 
-`validateNamespaceName` can return errors such as `invalid namespace name` (empty) and `namespace name too long` (`len(name) > 64`).
-
-All handlers take `*connSession`. **`USE`** sets `session.store` to the resolved `*store.Store`. **`CNAMESPACE`** never changes `session.store` — only the registry. **`SET` / `GET` / …** use `session.store` only. **PING** ignores `session.store`. Nothing on `Server` stores “current namespace” globally — only inside each session.
+All handlers take `*clientSession`. **`USE`** sets `session.store` to the resolved `*store.Store`. **`CNAMESPACE`** never changes `session.store` — only the registry. **`SET` / `GET` / …** use `session.store` only. **PING** ignores `session.store`. Nothing on `Server` stores “current namespace” globally — only inside each session.
 
 ### What else has to change (ripple effects)
 
@@ -566,15 +556,16 @@ Phase 3 is not only new verbs plus a map: every code path that today assumes one
 #### Default namespace
 
 - Use a fixed name (e.g. `default`) so clients and integration tests work **without** sending `USE` first.
-- **Initialize it explicitly in `NewServer`:** insert `default` → `store.NewStore()` into `namespaces` before `Serve`. Each `handleConnection` seeds `connSession.store` by taking **`RLock`**, reading `namespaces["default"]`, then **`RUnlock`** (see snippet above).
+- **Initialize it explicitly in `NewServer`:** insert `default` → `store.NewStore()` into `namespaces` before `Serve`. Each `handleConnection` seeds `clientSession.store` by taking **`RLock`**, reading `namespaces["default"]`, then **`RUnlock`** (see snippet above).
 - Treat `default` like any other name at runtime (`USE default` is valid); the only special behaviour is **pre-creation** and **initial** `session.store` on connect.
 
 #### `USE` / `CNAMESPACE` semantics
 
 - **Arity:** `USE <name>` and `CNAMESPACE <name>` — exactly one name token; otherwise `wrong number of arguments for …` (match existing command style).
-- **Name validation (shared by `USE` and `CNAMESPACE`):**
-  - **Non-empty** after parsing — empty token → `-ERR invalid namespace name`.
-  - **Max length 64 bytes** — in Go use `len(name)` (UTF-8 **byte** length, not rune count). Reject if `len(name) > 64` with `-ERR namespace name too long`. Multi-byte UTF-8 characters count as several bytes toward that limit.
+- **Name validation (only when creating a namespace, inside `CreateNamespace` / `CNAMESPACE`):**
+  - **Non-empty** — empty token → `-ERR invalid namespace name`.
+  - **Max length 64 bytes** — `len(name)` is UTF-8 **byte** length; reject if `len(name) > 64` with `-ERR namespace name too long`.
+  - **`USE` does not re-validate** — it only looks up the registry. An overlong name that was never created yields **`-ERR namespace does not exist`** (same as any unknown name).
   - With `strings.Fields`, the name is a **single** token, so embedded spaces are impossible; no extra rule needed unless you add quoted strings later.
 - **Case sensitivity:** **Case-sensitive** — `db1` and `DB1` are different namespaces.
 - **`USE` when the name is missing from the registry:** `-ERR namespace does not exist` (exact message for this case).
@@ -589,7 +580,7 @@ Phase 3 is not only new verbs plus a map: every code path that today assumes one
 
 #### Command routing refactor
 
-- **`handleCommand(conn, line, session *connSession)`** — thread `session` from `handleConnection`; all data commands use `session.store`.
+- **`handleCommand(conn, line, session *clientSession)`** — thread `session` from `handleConnection`; all data commands use `session.store`.
 - **`PING`** does not need the registry. Registry mutations use `session.srv` and appropriate locking.
 
 #### Store package (`internal/store`)
@@ -599,7 +590,7 @@ Phase 3 is not only new verbs plus a map: every code path that today assumes one
 #### Tests and tooling
 
 - **Integration tests** implicitly use **`default`** unless the test sends `USE` / `CNAMESPACE`.
-- **New tests:** two connections, `CNAMESPACE a` then `USE a` / `CNAMESPACE b` then `USE b`, same key different values; concurrent `CNAMESPACE same` + `-race` (idempotent); `USE` missing name → `namespace does not exist`; duplicate `CNAMESPACE` → `+OK` without wiping data.
+- **New tests:** two connections, `CNAMESPACE a` then `USE a` / `CNAMESPACE b` then `USE b`, same key different values; concurrent `CNAMESPACE same` + `-race` (idempotent); `USE` unknown name (including an overlong name that was never created) → `namespace does not exist`; `CNAMESPACE` overlong → `namespace name too long`; duplicate `CNAMESPACE` → `+OK` without wiping data.
 - **`internal/server/testutil`:** unchanged API is fine if behaviour defaults to **`default`**.
 
 #### `cmd/server/main.go`

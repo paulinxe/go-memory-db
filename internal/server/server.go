@@ -11,14 +11,21 @@ import (
 	"go-memory-db/internal/store"
 )
 
+// clientSession holds per-client TCP session state: the server and the active namespace store.
+// It becomes useful when switching namespaces.
+type clientSession struct {
+	server *Server
+	store  *store.Store
+}
+
 // Server is the TCP command server.
 type Server struct {
 	Port           int
 	MaxConnections int
-	Store          *store.Store
 
-	mutex          sync.Mutex
-	listener       net.Listener // set while Serve is running; Close() clears and closes it
+	mutex      sync.Mutex // listener field only
+	namespaces *store.NamespaceRegistry
+	listener   net.Listener // set while Serve is running; Close() clears and closes it
 }
 
 func NewServer(port, maxConnections int) *Server {
@@ -29,7 +36,7 @@ func NewServer(port, maxConnections int) *Server {
 	return &Server{
 		Port:           port,
 		MaxConnections: maxConnections,
-		Store:          store.NewStore(),
+		namespaces:     store.NewNamespaceRegistry(),
 	}
 }
 
@@ -80,7 +87,7 @@ func (s *Server) serve(listener net.Listener) error {
 		select {
 		case connections <- struct{}{}:
 			fmt.Printf("accepted connection from %s\n", conn.RemoteAddr())
-			go handleConnection(conn, connections, s.Store)
+			go handleConnection(conn, connections, s)
 		default:
 			printError(conn, "max clients reached")
 			conn.Close()
@@ -88,12 +95,18 @@ func (s *Server) serve(listener net.Listener) error {
 	}
 }
 
-func handleConnection(conn net.Conn, connections <-chan struct{}, st *store.Store) {
+func handleConnection(conn net.Conn, connections <-chan struct{}, server *Server) {
 	defer closeConnection(conn, connections)
+
+	session := &clientSession{
+		server: server,
+		store:  server.namespaces.GetDefault(),
+	}
+
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		line := scanner.Text()
-		handleCommand(conn, line, st)
+		handleCommand(conn, line, session)
 	}
 }
 
@@ -104,25 +117,51 @@ func closeConnection(conn net.Conn, connections <-chan struct{}) {
 	fmt.Printf("connection from %s closed\n", conn.RemoteAddr())
 }
 
-func handleCommand(writer io.Writer, line string, store *store.Store) {
+func handleCommand(writer io.Writer, line string, session *clientSession) {
 	tokens := strings.Fields(line)
 	if len(tokens) == 0 {
 		return
 	}
 
-	// TODO: to check if worth it introducing a Locator
-
 	command := tokens[0]
 	switch strings.ToUpper(command) {
 	case "PING":
 		_, _ = io.WriteString(writer, "+PONG\n")
+	case "CNAMESPACE":
+		if len(tokens) != 2 {
+			printError(writer, "wrong number of arguments for CNAMESPACE. Expecting name")
+			return
+		}
+
+		name := tokens[1]
+		if err := session.server.namespaces.CreateNamespace(name); err != nil {
+			printError(writer, err.Error())
+			return
+		}
+
+		printSuccess(writer, "OK")
+	case "USE":
+		if len(tokens) != 2 {
+			printError(writer, "wrong number of arguments for USE. Expecting name")
+			return
+		}
+
+		name := tokens[1]
+		ns, ok := session.server.namespaces.Get(name)
+		if !ok {
+			printError(writer, "namespace does not exist")
+			return
+		}
+
+		session.store = ns
+		printSuccess(writer, "OK")
 	case "SET":
 		if len(tokens) < 3 {
 			printError(writer, "wrong number of arguments for SET. Expecting key value")
 			return
 		}
 
-		err := store.Set(tokens[1], strings.Join(tokens[2:], " "))
+		err := session.store.Set(tokens[1], strings.Join(tokens[2:], " "))
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -135,7 +174,7 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 			return
 		}
 
-		value, ok := store.Get(tokens[1])
+		value, ok := session.store.Get(tokens[1])
 		if !ok {
 			printError(writer, "key not found")
 			return
@@ -148,10 +187,10 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 			return
 		}
 
-		store.Del(tokens[1])
+		session.store.Del(tokens[1])
 		printSuccess(writer, "OK")
 	case "KEYS":
-		keys := store.Keys()
+		keys := session.store.Keys()
 		printSuccess(writer, strings.Join(keys, ","))
 	case "LPUSH":
 		if len(tokens) < 3 {
@@ -159,7 +198,7 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 			return
 		}
 
-		err := store.LPush(tokens[1], strings.Join(tokens[2:], " "))
+		err := session.store.LPush(tokens[1], strings.Join(tokens[2:], " "))
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -172,7 +211,7 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 			return
 		}
 
-		value, err := store.LPop(tokens[1])
+		value, err := session.store.LPop(tokens[1])
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -185,7 +224,7 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 			return
 		}
 
-		elements := store.LGet(tokens[1])
+		elements := session.store.LGet(tokens[1])
 		printSuccess(writer, strings.Join(elements, ","))
 	case "HSET":
 		if len(tokens) < 4 {
@@ -193,7 +232,7 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 			return
 		}
 
-		err := store.HSet(tokens[1], tokens[2:])
+		err := session.store.HSet(tokens[1], tokens[2:])
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -206,7 +245,7 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 			return
 		}
 
-		err := store.HSetOne(tokens[1], tokens[2], strings.Join(tokens[3:], " "))
+		err := session.store.HSetOne(tokens[1], tokens[2], strings.Join(tokens[3:], " "))
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -219,7 +258,7 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 			return
 		}
 
-		pairs := store.HGet(tokens[1])
+		pairs := session.store.HGet(tokens[1])
 		printSuccess(writer, strings.Join(pairs, ","))
 	case "HGETONE":
 		if len(tokens) != 3 {
@@ -227,7 +266,7 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 			return
 		}
 
-		value, err := store.HGetOne(tokens[1], tokens[2])
+		value, err := session.store.HGetOne(tokens[1], tokens[2])
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -240,7 +279,7 @@ func handleCommand(writer io.Writer, line string, store *store.Store) {
 			return
 		}
 
-		err := store.HDel(tokens[1], tokens[2])
+		err := session.store.HDel(tokens[1], tokens[2])
 		if err != nil {
 			printError(writer, err.Error())
 			return
