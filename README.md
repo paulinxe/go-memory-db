@@ -6,8 +6,8 @@ An in-memory key–value style database with a small custom text protocol over T
 
 - **TCP server** - one goroutine per accepted client, bounded concurrency via a buffered “slot” channel (when full, new connections get an error and are closed).
 - **Line protocol** - one command per line; tokens are split with `strings.Fields` (whitespace-separated). Command names are case-insensitive.
-- **Per-connection session** - each client has an active **Store** (namespace). Data commands run against that store only.
-- **NamespaceRegistry** - maps namespace names to isolated `Store` instances; a pre-created **default** namespace exists at startup.
+- **Per-connection session** - each client has an active **Namespace** (logical database). Data commands run against that namespace only.
+- **NamespaceRegistry** - maps namespace names to isolated namespaces; a pre-created **default** namespace exists at startup.
 - **Value types** - each key is at most one of: string, list, or hash. Conflicting writes (same key in different data structures) return `-key already exists` (the server does not use a `WRONGTYPE` string).
 
 Future work (TTL, pub/sub, graceful shutdown, sharding, etc.) is outlined in [plan.md](plan.md).
@@ -80,11 +80,12 @@ Examples use `→` for client lines and `←` for server lines.
 ### Control
 
 
-| Command             | Arity | Behaviour                                                                                                                          |
-| ------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `PING`              | none  | Reply `+PONG`                                                                                                                      |
-| `CNAMESPACE <name>` | name  | Register a new namespace (idempotent if it exists). Does **not** switch the current session. Names: non-empty, max 64 UTF-8 bytes. |
-| `USE <name>`        | name  | Attach this connection to an existing namespace’s store. Unknown name → `-namespace does not exist`                                |
+| Command             | Arity | Behaviour                                                                                                                                       |
+| ------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PING`              | none  | Reply `+PONG`                                                                                                                                   |
+| `CNAMESPACE <name>` | name  | Register a new namespace (idempotent if it exists). Does **not** switch the current session. Names: non-empty, max 64 UTF-8 bytes.              |
+| `USE <name>`        | name  | Attach this connection to an existing namespace’s store. Unknown name → `-namespace does not exist`                                             |
+| `DNAMESPACE <name>` | name  | Delete a namespace. `default` cannot be deleted. Attached clients to a deleted namespace get `-namespace deleted` on data commands until `USE`. |
 
 
 ### Strings
@@ -151,4 +152,4 @@ GET x
 
 ## Roadmap
 
-See [plan.md](plan.md) for **Phase 4** onward: namespace deletion, TTL, pub/sub, shutdown, and optional store sharding.
+See [plan.md](plan.md) for TTL, pub/sub, shutdown, and optional store sharding.

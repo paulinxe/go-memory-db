@@ -14,8 +14,8 @@ import (
 // clientSession holds per-client TCP session state: the server and the active namespace store.
 // It becomes useful when switching namespaces.
 type clientSession struct {
-	server *Server
-	store  *db.Store
+	server    *Server
+	namespace *db.Namespace
 }
 
 // Server is the TCP command server.
@@ -99,8 +99,8 @@ func handleConnection(conn net.Conn, connections <-chan struct{}, server *Server
 	defer closeConnection(conn, connections)
 
 	session := &clientSession{
-		server: server,
-		store:  server.namespaces.GetDefault(),
+		server:    server,
+		namespace: server.namespaces.GetDefault(),
 	}
 
 	scanner := bufio.NewScanner(conn)
@@ -124,6 +124,21 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 	}
 
 	command := tokens[0]
+
+	// Namespace deletion guard. Control-plane commands bypass it.
+	switch strings.ToUpper(command) {
+	case "PING", "USE", "CNAMESPACE", "DNAMESPACE":
+		// These commands are agnostic of the current namespace, they don't care if the namespace is deleted.
+	default:
+		select {
+		case <-session.namespace.IsDeleted():
+			printError(writer, "namespace deleted")
+			return
+		default:
+			// As the context is not done/cancelled, we allow the command to proceed.
+		}
+	}
+
 	switch strings.ToUpper(command) {
 	case "PING":
 		_, _ = io.WriteString(writer, "+PONG\n")
@@ -140,6 +155,19 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 		}
 
 		printSuccess(writer, "OK")
+	case "DNAMESPACE":
+		if len(tokens) != 2 {
+			printError(writer, "wrong number of arguments for DNAMESPACE. Expecting name")
+			return
+		}
+
+		name := tokens[1]
+		if err := session.server.namespaces.DeleteNamespace(name); err != nil {
+			printError(writer, err.Error())
+			return
+		}
+
+		printSuccess(writer, "OK")
 	case "USE":
 		if len(tokens) != 2 {
 			printError(writer, "wrong number of arguments for USE. Expecting name")
@@ -149,11 +177,11 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 		name := tokens[1]
 		ns, ok := session.server.namespaces.Get(name)
 		if !ok {
-			printError(writer, "namespace does not exist")
+			printError(writer, db.ErrNamespaceDoesNotExist.Error())
 			return
 		}
 
-		session.store = ns
+		session.namespace = ns
 		printSuccess(writer, "OK")
 	case "SET":
 		if len(tokens) < 3 {
@@ -161,7 +189,7 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		err := session.store.Set(tokens[1], strings.Join(tokens[2:], " "))
+		err := session.namespace.GetStore().Set(tokens[1], strings.Join(tokens[2:], " "))
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -174,7 +202,7 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		value, ok := session.store.Get(tokens[1])
+		value, ok := session.namespace.GetStore().Get(tokens[1])
 		if !ok {
 			printError(writer, "key not found")
 			return
@@ -187,10 +215,10 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		session.store.Del(tokens[1])
+		session.namespace.GetStore().Del(tokens[1])
 		printSuccess(writer, "OK")
 	case "KEYS":
-		keys := session.store.Keys()
+		keys := session.namespace.GetStore().Keys()
 		printSuccess(writer, strings.Join(keys, ","))
 	case "LPUSH":
 		if len(tokens) < 3 {
@@ -198,7 +226,7 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		err := session.store.LPush(tokens[1], strings.Join(tokens[2:], " "))
+		err := session.namespace.GetStore().LPush(tokens[1], strings.Join(tokens[2:], " "))
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -211,7 +239,7 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		value, err := session.store.LPop(tokens[1])
+		value, err := session.namespace.GetStore().LPop(tokens[1])
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -224,7 +252,7 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		elements := session.store.LGet(tokens[1])
+		elements := session.namespace.GetStore().LGet(tokens[1])
 		printSuccess(writer, strings.Join(elements, ","))
 	case "HSET":
 		if len(tokens) < 4 {
@@ -232,7 +260,7 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		err := session.store.HSet(tokens[1], tokens[2:])
+		err := session.namespace.GetStore().HSet(tokens[1], tokens[2:])
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -245,7 +273,7 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		err := session.store.HSetOne(tokens[1], tokens[2], strings.Join(tokens[3:], " "))
+		err := session.namespace.GetStore().HSetOne(tokens[1], tokens[2], strings.Join(tokens[3:], " "))
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -258,7 +286,7 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		pairs := session.store.HGet(tokens[1])
+		pairs := session.namespace.GetStore().HGet(tokens[1])
 		printSuccess(writer, strings.Join(pairs, ","))
 	case "HGETONE":
 		if len(tokens) != 3 {
@@ -266,7 +294,7 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		value, err := session.store.HGetOne(tokens[1], tokens[2])
+		value, err := session.namespace.GetStore().HGetOne(tokens[1], tokens[2])
 		if err != nil {
 			printError(writer, err.Error())
 			return
@@ -279,7 +307,7 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		err := session.store.HDel(tokens[1], tokens[2])
+		err := session.namespace.GetStore().HDel(tokens[1], tokens[2])
 		if err != nil {
 			printError(writer, err.Error())
 			return

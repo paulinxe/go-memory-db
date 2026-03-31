@@ -1,6 +1,9 @@
 package db
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 const (
 	// defaultNamespaceName is the pre-created namespace every registry starts with.
@@ -8,16 +11,43 @@ const (
 	maxNamespaceNameBytes = 64
 )
 
+// Namespace is a logical database. It owns a Store plus a lifecycle context that is
+// cancelled when the namespace is deleted.
+type Namespace struct {
+	store  *Store
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func newNamespace() *Namespace {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Namespace{
+		store:  NewStore(),
+		ctx:    ctx,
+		cancel: cancel, // Called when a namespace is deleted.
+	}
+}
+
+// GetStore returns the underlying store.
+func (n *Namespace) GetStore() *Store {
+	return n.store
+}
+
+// IsDeleted returns a channel that is closed when the namespace is deleted.
+func (n *Namespace) IsDeleted() <-chan struct{} {
+	return n.ctx.Done()
+}
+
 // NamespaceRegistry maps logical namespace names to isolated Store instances.
 type NamespaceRegistry struct {
-	mutex  sync.Mutex // protects the modifications of the stores map
-	stores map[string]*Store
+	mutex      sync.RWMutex
+	namespaces map[string]*Namespace
 }
 
 // NewNamespaceRegistry returns a registry containing a default namespace with an empty Store.
 func NewNamespaceRegistry() *NamespaceRegistry {
-	r := &NamespaceRegistry{stores: make(map[string]*Store)}
-	r.stores[defaultNamespaceName] = NewStore()
+	r := &NamespaceRegistry{namespaces: make(map[string]*Namespace)}
+	r.namespaces[defaultNamespaceName] = newNamespace()
 	return r
 }
 
@@ -34,25 +64,48 @@ func (r *NamespaceRegistry) CreateNamespace(name string) error {
 
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
-	if _, ok := r.stores[name]; ok {
+	if _, ok := r.namespaces[name]; ok {
 		return nil
 	}
 
-	r.stores[name] = NewStore()
+	r.namespaces[name] = newNamespace()
 	return nil
 }
 
-// Get returns the store for name and whether it exists.
-func (r *NamespaceRegistry) Get(name string) (*Store, bool) {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	store, ok := r.stores[name]
-	return store, ok
+// Get returns the namespace for name and whether it exists.
+func (r *NamespaceRegistry) Get(name string) (*Namespace, bool) {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	namespace, ok := r.namespaces[name]
+	return namespace, ok
 }
 
-// GetDefault returns the store for the default namespace.
-func (r *NamespaceRegistry) GetDefault() *Store {
+// GetDefault returns the namespace for the default namespace.
+func (r *NamespaceRegistry) GetDefault() *Namespace {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	return r.namespaces[defaultNamespaceName]
+}
+
+// DeleteNamespace deletes a namespace from the registry and cancels it so attached sessions
+// immediately become invalid.
+func (r *NamespaceRegistry) DeleteNamespace(name string) error {
+	if name == defaultNamespaceName {
+		return ErrCannotDeleteDefaultNamespace
+	}
+
 	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	return r.stores[defaultNamespaceName]
+	namespace, ok := r.namespaces[name]
+	if !ok {
+		r.mutex.Unlock()
+		return ErrNamespaceDoesNotExist
+	}
+
+	delete(r.namespaces, name)
+	r.mutex.Unlock()
+
+	// By cancelling the context, all attached sessions working on this namespace will get an error when trying
+	// to send commands to the namespace.
+	namespace.cancel()
+	return nil
 }

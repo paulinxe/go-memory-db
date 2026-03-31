@@ -4,44 +4,7 @@ A multi-namespace in-memory database with a custom text protocol, TTL expiry, an
 
 ---
 
-Phases **1–3** are implemented: TCP server, line-based protocol, strings/lists/hashes, and multi-namespace support with `CNAMESPACE` / `USE`. See **README.md** for commands, wire format, and how to run the server.
-
----
-
-## Phase 4 — Namespace deletion
-
-**Goal:** remove a logical database from the registry so its name can be reused and its `*db.Store` can be dropped when nothing references it.
-
-### What to build
-
-- **`DNAMESPACE <name>`** — delete the namespace entry from `namespaces` under the registry **write lock**.
-- Clear rules for **edge cases** (see below); cover them with tests and `-race`.
-
-### Protocol addition
-
-```
-→  DNAMESPACE db1
-←  +OK
-
-→  DNAMESPACE db1
-←  -ERR namespace does not exist   ← already gone (same message as `USE` on a missing name)
-```
-
-### Semantics and design choices
-
-- **`default`:** **reject deletion** (recommended) — `DNAMESPACE default` → `-ERR` so there is always at least one namespace and existing clients always have a valid bootstrap target.
-- **Unknown name:** `-ERR namespace does not exist` (same exact string as `USE` when the name is not in the registry).
-- **Clients still attached:** connections may still hold `session.store` pointing at the old `*db.Store` after the name is removed from the map. Decide and document one approach:
-  - **Simple:** allow it — the store is orphaned but still usable until those connections `USE` something else or disconnect; the name is gone so `USE db1` fails for new lookups, but old pointers stay valid; or
-  - **Stricter:** treat subsequent commands on that session as errors until `USE` / reconnect (requires detecting “store no longer registered,” e.g. generation IDs or scanning — more work).
-- **Concurrent `USE` / `RLock` readers:** deleting must happen under **`Lock`**. A connection doing `USE` under `RLock` may still resolve a pointer just before delete; that is OK if you only remove the map entry and let the `*db.Store` live until the last goroutine drops it. Do **not** delete from the map while holding only `RLock`.
-- **Phase 5+:** when TTL daemons or brokers exist per namespace, `DNAMESPACE` must **stop** those goroutines and release resources — sketch that when you add Phase 5–6; for Phase 4 only the map and `*db.Store` lifetime matter.
-
-### Tests
-
-- `DNAMESPACE` removes name; `USE` that name afterwards fails.
-- `DNAMESPACE default` rejected (if you adopt that rule).
-- Concurrent `DNAMESPACE` + `CNAMESPACE` / `USE` on the same or different names under `-race`.
+Phases **1–4** are implemented: TCP server, line-based protocol, strings/lists/hashes, and multi-namespace support with `CNAMESPACE` / `USE`. See **README.md** for commands, wire format, and how to run the server.
 
 ---
 

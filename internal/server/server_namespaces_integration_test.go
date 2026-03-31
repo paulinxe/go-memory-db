@@ -41,6 +41,8 @@ func Test_we_get_an_error_when_using_the_namespace_commands_wrongly(t *testing.T
 	testutil.MustReadLine(t, r, "-wrong number of arguments for USE. Expecting name\n")
 	testutil.SendToServer(t, c, "CNAMESPACE\n")
 	testutil.MustReadLine(t, r, "-wrong number of arguments for CNAMESPACE. Expecting name\n")
+	testutil.SendToServer(t, c, "DNAMESPACE\n")
+	testutil.MustReadLine(t, r, "-wrong number of arguments for DNAMESPACE. Expecting name\n")
 }
 
 func Test_we_can_switch_between_namespaces(t *testing.T) {
@@ -144,4 +146,73 @@ func Test_namespace_isolation_across_connections(t *testing.T) {
 	testutil.MustReadLine(t, ra, "+1\n")
 	testutil.SendToServer(t, connection2, "GET shared\n")
 	testutil.MustReadLine(t, rb, "+2\n")
+}
+
+func Test_we_can_delete_a_namespace_and_then_use_fails(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t)
+	defer c.Close()
+	r := bufio.NewReader(c)
+
+	testutil.SendToServer(t, c, "CNAMESPACE db1\n")
+	testutil.MustReadLine(t, r, "+OK\n")
+	testutil.SendToServer(t, c, "USE db1\n")
+	testutil.MustReadLine(t, r, "+OK\n")
+	testutil.SendToServer(t, c, "DNAMESPACE db1\n")
+	testutil.MustReadLine(t, r, "+OK\n")
+	testutil.SendToServer(t, c, "USE db1\n")
+	testutil.MustReadLine(t, r, "-namespace does not exist\n")
+}
+
+func Test_we_cannot_delete_default_namespace(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t)
+	defer c.Close()
+	r := bufio.NewReader(c)
+
+	testutil.SendToServer(t, c, "DNAMESPACE default\n")
+	testutil.MustReadLine(t, r, "-cannot delete default namespace\n")
+}
+
+func Test_deleting_current_namespace_blocks_data_commands_until_use(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t)
+	defer c.Close()
+	r := bufio.NewReader(c)
+
+	testutil.SendToServer(t, c, "CNAMESPACE db1\n")
+	testutil.MustReadLine(t, r, "+OK\n")
+	testutil.SendToServer(t, c, "USE db1\n")
+	testutil.MustReadLine(t, r, "+OK\n")
+	testutil.SendToServer(t, c, "DNAMESPACE db1\n")
+	testutil.MustReadLine(t, r, "+OK\n")
+
+	testutil.SendToServer(t, c, "SET a b\n")
+	testutil.MustReadLine(t, r, "-namespace deleted\n")
+
+	testutil.SendToServer(t, c, "USE default\n")
+	testutil.MustReadLine(t, r, "+OK\n")
+	testutil.SendToServer(t, c, "SET a b\n")
+	testutil.MustReadLine(t, r, "+OK\n")
+}
+
+func Test_deleting_namespace_invalidates_other_attached_connections(t *testing.T) {
+	testutil.StartTestServer(t, 4)
+	connection1 := testutil.ConnectToServer(t)
+	defer connection1.Close()
+	connection2 := testutil.ConnectToServer(t)
+	defer connection2.Close()
+	ra := bufio.NewReader(connection1)
+	rb := bufio.NewReader(connection2)
+
+	testutil.SendToServer(t, connection1, "CNAMESPACE db1\n")
+	testutil.MustReadLine(t, ra, "+OK\n")
+	testutil.SendToServer(t, connection1, "USE db1\n")
+	testutil.MustReadLine(t, ra, "+OK\n")
+
+	testutil.SendToServer(t, connection2, "DNAMESPACE db1\n")
+	testutil.MustReadLine(t, rb, "+OK\n")
+
+	testutil.SendToServer(t, connection1, "SET x 1\n")
+	testutil.MustReadLine(t, ra, "-namespace deleted\n")
 }
