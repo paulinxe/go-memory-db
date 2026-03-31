@@ -307,11 +307,7 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 			return
 		}
 
-		err := session.namespace.GetStore().HDel(tokens[1], tokens[2])
-		if err != nil {
-			printError(writer, err.Error())
-			return
-		}
+		session.namespace.GetStore().HDel(tokens[1], tokens[2])
 
 		printSuccess(writer, "OK")
 	default:
