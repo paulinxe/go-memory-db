@@ -9,8 +9,9 @@ An in-memory key–value style database with a small custom text protocol over T
 - **Per-connection session** - each client has an active **Namespace** (logical database). Data commands run against that namespace only.
 - **NamespaceRegistry** - maps namespace names to isolated namespaces; a pre-created **default** namespace exists at startup.
 - **Value types** - each key is at most one of: string, list, or hash. Conflicting writes (same key in different data structures) return `-key already exists` (the server does not use a `WRONGTYPE` string).
+- **TTL expiry** - per-namespace background sweeper plus `EXPIRE` / `TTL` commands.
 
-Future work (TTL, pub/sub, graceful shutdown, sharding, etc.) is outlined in [plan.md](plan.md).
+Future work (pub/sub, graceful shutdown, sharding, etc.) is outlined in [plan.md](plan.md).
 
 ## Requirements
 
@@ -95,6 +96,8 @@ Examples use `→` for client lines and `←` for server lines.
 | ---------------------- | ----------- | ------------------------------------------------------------------------------------------------------ |
 | `SET <key> <value...>` | key + value | Value is the rest of the line after the key (spaces allowed). Fails if the key exists as another type. |
 | `GET <key>`            | key         | `+value` or `-key not found`                                                                           |
+| `EXPIRE <key> <sec>`   | key + sec   | Set expiry in seconds.                                                                                 |
+| `TTL <key>`            | key         | Returns `+<int>` based only on the expiry map. Missing entry → `+-1`. Negative remaining → `+0`.       |
 | `DEL <key>`            | key         | Removes the key from whichever map holds it; `+OK`                                                     |
 | `KEYS`                 | none        | `+` comma-separated keys from strings, lists, and hashes (order not defined)                           |
 

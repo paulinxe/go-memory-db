@@ -21,11 +21,14 @@ type Namespace struct {
 
 func newNamespace() *Namespace {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Namespace{
+	namespace := &Namespace{
 		store:  NewStore(),
 		ctx:    ctx,
 		cancel: cancel, // Called when a namespace is deleted.
 	}
+
+	namespace.store.startExpiryDaemon(ctx)
+	return namespace
 }
 
 // GetStore returns the underlying store.
@@ -108,4 +111,20 @@ func (r *NamespaceRegistry) DeleteNamespace(name string) error {
 	// to send commands to the namespace.
 	namespace.cancel()
 	return nil
+}
+
+// Shutdown cancels all namespaces (including default). Intended for server shutdown / tests.
+func (r *NamespaceRegistry) Shutdown() {
+	// We copy the namespaces to a slice so we can unlock the mutex before cancelling the contexts.
+	// This is to avoid deadlocks as cancelling is synchronous and could block the mutex.
+	r.mutex.Lock()
+	namespaces := make([]*Namespace, 0, len(r.namespaces))
+	for _, ns := range r.namespaces {
+		namespaces = append(namespaces, ns)
+	}
+	r.mutex.Unlock()
+
+	for _, ns := range namespaces {
+		ns.cancel()
+	}
 }

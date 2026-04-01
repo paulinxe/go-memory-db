@@ -66,6 +66,9 @@ func (s *Server) Close() error {
 	s.listener = nil
 	s.mutex.Unlock()
 
+	// Stop namespace lifecycle goroutines (e.g., TTL daemons).
+	s.namespaces.Shutdown()
+
 	if listener != nil {
 		return listener.Close()
 	}
@@ -220,6 +223,31 @@ func handleCommand(writer io.Writer, line string, session *clientSession) {
 	case "KEYS":
 		keys := session.namespace.GetStore().Keys()
 		printSuccess(writer, strings.Join(keys, ","))
+	case "EXPIRE":
+		if len(tokens) != 3 {
+			printError(writer, "wrong number of arguments for EXPIRE. Expecting key seconds")
+			return
+		}
+
+		err := session.namespace.GetStore().Expire(tokens[1], tokens[2])
+		if err != nil {
+			if err == db.ErrKeyNotFound {
+				printSuccess(writer, "0")
+				return
+			}
+
+			printError(writer, err.Error())
+			return
+		}
+
+		printSuccess(writer, "OK")
+	case "TTL":
+		if len(tokens) != 2 {
+			printError(writer, "wrong number of arguments for TTL. Expecting key")
+			return
+		}
+
+		printSuccess(writer, session.namespace.GetStore().TTL(tokens[1]))
 	case "LPUSH":
 		if len(tokens) < 3 {
 			printError(writer, "wrong number of arguments for LPUSH. Expecting key value")

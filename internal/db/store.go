@@ -1,6 +1,9 @@
 package db
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // Store is the in-memory store for the database.
 type Store struct {
@@ -8,6 +11,7 @@ type Store struct {
 	strings map[string]string
 	lists   map[string][]string
 	hashes  map[string]map[string]string
+	expiry  map[string]time.Time
 }
 
 func NewStore() *Store {
@@ -15,6 +19,7 @@ func NewStore() *Store {
 		strings: make(map[string]string),
 		lists:   make(map[string][]string),
 		hashes:  make(map[string]map[string]string),
+		expiry:  make(map[string]time.Time),
 	}
 }
 
@@ -41,6 +46,7 @@ func (s *Store) Del(key string) {
 	delete(s.strings, key)
 	delete(s.lists, key)
 	delete(s.hashes, key)
+	delete(s.expiry, key)
 }
 
 func (s *Store) Keys() []string {
