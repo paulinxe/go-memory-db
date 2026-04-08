@@ -9,8 +9,8 @@ import (
 )
 
 func Test_expire_missing_key_is_noop(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -19,8 +19,8 @@ func Test_expire_missing_key_is_noop(t *testing.T) {
 }
 
 func Test_expire_rejects_non_integer_seconds(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -31,8 +31,8 @@ func Test_expire_rejects_non_integer_seconds(t *testing.T) {
 }
 
 func Test_expire_rejects_zero_or_negative_seconds(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -45,8 +45,8 @@ func Test_expire_rejects_zero_or_negative_seconds(t *testing.T) {
 }
 
 func Test_ttl_uses_expiry_map_only(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -59,8 +59,8 @@ func Test_ttl_uses_expiry_map_only(t *testing.T) {
 }
 
 func Test_expired_key_is_eventually_removed_by_sweeper(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 

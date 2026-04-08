@@ -10,8 +10,8 @@ import (
 )
 
 func Test_we_can_send_the_ping_command(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -21,8 +21,8 @@ func Test_we_can_send_the_ping_command(t *testing.T) {
 }
 
 func Test_we_can_send_the_ping_command_in_a_case_insensitive_manner(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -32,8 +32,8 @@ func Test_we_can_send_the_ping_command_in_a_case_insensitive_manner(t *testing.T
 }
 
 func Test_blank_lines_are_ignored(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -44,8 +44,8 @@ func Test_blank_lines_are_ignored(t *testing.T) {
 }
 
 func Test_whitespace_only_lines_are_ignored(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 
 	r := bufio.NewReader(c)
@@ -56,8 +56,8 @@ func Test_whitespace_only_lines_are_ignored(t *testing.T) {
 }
 
 func Test_we_can_delete_values(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -97,8 +97,8 @@ func Test_we_can_delete_values(t *testing.T) {
 }
 
 func Test_delete_fails_when_missing_value(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -108,8 +108,8 @@ func Test_delete_fails_when_missing_value(t *testing.T) {
 }
 
 func Test_we_can_list_keys(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -151,8 +151,8 @@ func Test_we_can_list_keys(t *testing.T) {
 }
 
 func Test_unknown_commands_are_rejected(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -162,12 +162,12 @@ func Test_unknown_commands_are_rejected(t *testing.T) {
 }
 
 func Test_new_connections_are_rejected_when_max_clients_is_reached(t *testing.T) {
-	testutil.StartTestServer(t, 1)
+	_, addr := testutil.StartTestServer(t, 1)
 
-	c1 := testutil.ConnectToServer(t)
+	c1 := testutil.ConnectToServer(t, addr)
 	defer c1.Close()
 
-	connectionToBeRefused, err := testutil.DialTCPRetry(testutil.GetServerAddress())
+	connectionToBeRefused, err := testutil.DialTCPRetry(addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,3 +177,14 @@ func Test_new_connections_are_rejected_when_max_clients_is_reached(t *testing.T)
 	testutil.MustReadLine(t, reader, "-max clients reached\n")
 }
 
+func Test_close_can_be_called_twice_without_error(t *testing.T) {
+	srv, _ := testutil.StartTestServer(t, 4)
+
+	if err := srv.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+
+	if err := srv.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}

@@ -8,8 +8,8 @@ import (
 )
 
 func Test_hset_requires_key_and_even_field_value_pairs(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -31,8 +31,8 @@ func Test_hset_requires_key_and_even_field_value_pairs(t *testing.T) {
 }
 
 func Test_hset_merges_multiple_pairs_and_preserves_other_fields(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -49,8 +49,8 @@ func Test_hset_merges_multiple_pairs_and_preserves_other_fields(t *testing.T) {
 }
 
 func Test_hget_requires_key(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -63,8 +63,8 @@ func Test_hget_requires_key(t *testing.T) {
 }
 
 func Test_hget_returns_empty_when_hash_missing(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -74,8 +74,8 @@ func Test_hget_returns_empty_when_hash_missing(t *testing.T) {
 }
 
 func Test_hsetone_requires_key_field_and_value(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -91,8 +91,8 @@ func Test_hsetone_requires_key_field_and_value(t *testing.T) {
 }
 
 func Test_hsetone_sets_field_and_allows_updates(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -116,8 +116,8 @@ func Test_hsetone_sets_field_and_allows_updates(t *testing.T) {
 }
 
 func Test_hsetone_value_preserves_spaces(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -129,8 +129,8 @@ func Test_hsetone_value_preserves_spaces(t *testing.T) {
 }
 
 func Test_hsetone_fails_when_key_is_string(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -143,8 +143,8 @@ func Test_hsetone_fails_when_key_is_string(t *testing.T) {
 }
 
 func Test_hsetone_fails_when_key_is_list(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -157,8 +157,8 @@ func Test_hsetone_fails_when_key_is_list(t *testing.T) {
 }
 
 func Test_hdel_requires_key_and_field(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -174,8 +174,8 @@ func Test_hdel_requires_key_and_field(t *testing.T) {
 }
 
 func Test_hdel_ok_when_hash_or_field_missing(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -192,8 +192,8 @@ func Test_hdel_ok_when_hash_or_field_missing(t *testing.T) {
 }
 
 func Test_hdel_removes_field_and_drops_empty_hash(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -215,8 +215,8 @@ func Test_hdel_removes_field_and_drops_empty_hash(t *testing.T) {
 }
 
 func Test_hdel_is_noop_when_key_is_string_or_list(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -237,8 +237,8 @@ func Test_hdel_is_noop_when_key_is_string_or_list(t *testing.T) {
 }
 
 func Test_hgetone_requires_key_and_field(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -254,8 +254,8 @@ func Test_hgetone_requires_key_and_field(t *testing.T) {
 }
 
 func Test_hgetone_returns_error_when_hash_missing(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -265,8 +265,8 @@ func Test_hgetone_returns_error_when_hash_missing(t *testing.T) {
 }
 
 func Test_hgetone_returns_error_when_field_missing(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -279,8 +279,8 @@ func Test_hgetone_returns_error_when_field_missing(t *testing.T) {
 }
 
 func Test_hgetone_value_can_contain_commas(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)

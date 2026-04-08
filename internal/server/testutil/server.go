@@ -7,34 +7,44 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	"strconv"
 	"testing"
 	"time"
 
 	"go-memory-db/internal/server"
 )
 
-const ServerPort = 55321
-
-func GetServerAddress() string {
-	return net.JoinHostPort("127.0.0.1", strconv.Itoa(ServerPort))
-}
-
-// StartTestServer runs the server in a goroutine and registers t.Cleanup to Close it.
-func StartTestServer(t *testing.T, maxConnections int) *server.Server {
+// StartTestServer runs the server on an ephemeral port, waits until it is listening,
+// registers t.Cleanup to Close it, and returns the server and dial address.
+func StartTestServer(t *testing.T, maxConnections int) (*server.Server, string) {
 	t.Helper()
 
-	srv := server.NewServer(ServerPort, maxConnections)
+	srv := server.NewServer(0, maxConnections)
 	go func() { _ = srv.Serve() }()
 	t.Cleanup(func() { _ = srv.Close() })
 
-	return srv
+	addr := waitListenAddr(t, srv)
+	return srv, addr
 }
 
-func ConnectToServer(t *testing.T) net.Conn {
+func waitListenAddr(t *testing.T, srv *server.Server) string {
 	t.Helper()
 
-	c, err := DialTCPRetry(GetServerAddress())
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if addr := srv.ListenerAddress(); addr != "" {
+			return addr
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatal("server did not start listening in time")
+	return ""
+}
+
+func ConnectToServer(t *testing.T, address string) net.Conn {
+	t.Helper()
+
+	c, err := DialTCPRetry(address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +75,7 @@ func DialTCPRetry(address string) (net.Conn, error) {
 
 func SendToServer(t *testing.T, connection net.Conn, command string) {
 	t.Helper()
+
 	if _, err := connection.Write([]byte(command)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -73,10 +84,12 @@ func SendToServer(t *testing.T, connection net.Conn, command string) {
 // MustReadLine reads until '\n' and asserts the full line matches want (including newline).
 func MustReadLine(t *testing.T, r *bufio.Reader, want string) {
 	t.Helper()
+
 	line, err := r.ReadString('\n')
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
+
 	if line != want {
 		t.Fatalf("got line %q, want %q", line, want)
 	}

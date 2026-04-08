@@ -8,8 +8,8 @@ import (
 )
 
 func Test_we_can_set_and_get_values(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -22,8 +22,8 @@ func Test_we_can_set_and_get_values(t *testing.T) {
 }
 
 func Test_we_can_set_values_with_spaces(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -36,8 +36,8 @@ func Test_we_can_set_values_with_spaces(t *testing.T) {
 }
 
 func Test_set_fails_when_missing_value(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -47,8 +47,8 @@ func Test_set_fails_when_missing_value(t *testing.T) {
 }
 
 func Test_get_fails_when_key_not_exists(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -58,8 +58,8 @@ func Test_get_fails_when_key_not_exists(t *testing.T) {
 }
 
 func Test_get_fails_when_missing_value(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)

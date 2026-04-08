@@ -9,8 +9,8 @@ import (
 )
 
 func Test_we_cannot_use_an_unknown_namespace(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -19,8 +19,8 @@ func Test_we_cannot_use_an_unknown_namespace(t *testing.T) {
 }
 
 func Test_we_cannot_create_a_namespace_with_a_too_long_name(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -32,8 +32,8 @@ func Test_we_cannot_create_a_namespace_with_a_too_long_name(t *testing.T) {
 }
 
 func Test_we_get_an_error_when_using_the_namespace_commands_wrongly(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -46,8 +46,8 @@ func Test_we_get_an_error_when_using_the_namespace_commands_wrongly(t *testing.T
 }
 
 func Test_we_can_switch_between_namespaces(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -68,8 +68,8 @@ func Test_we_can_switch_between_namespaces(t *testing.T) {
 }
 
 func Test_a_new_connection_lands_on_the_default_namespace(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -88,8 +88,8 @@ func Test_a_new_connection_lands_on_the_default_namespace(t *testing.T) {
 }
 
 func Test_we_dont_get_an_error_when_creating_a_namespace_multiple_times(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -106,8 +106,8 @@ func Test_we_dont_get_an_error_when_creating_a_namespace_multiple_times(t *testi
 }
 
 func Test_we_dont_get_an_error_when_creating_the_default_namespace_multiple_times(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -120,10 +120,10 @@ func Test_we_dont_get_an_error_when_creating_the_default_namespace_multiple_time
 }
 
 func Test_namespace_isolation_across_connections(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection1 := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection1 := testutil.ConnectToServer(t, addr)
 	defer connection1.Close()
-	connection2 := testutil.ConnectToServer(t)
+	connection2 := testutil.ConnectToServer(t, addr)
 	defer connection2.Close()
 	ra := bufio.NewReader(connection1)
 	rb := bufio.NewReader(connection2)
@@ -149,8 +149,8 @@ func Test_namespace_isolation_across_connections(t *testing.T) {
 }
 
 func Test_we_can_delete_a_namespace_and_then_use_fails(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -165,8 +165,8 @@ func Test_we_can_delete_a_namespace_and_then_use_fails(t *testing.T) {
 }
 
 func Test_we_cannot_delete_default_namespace(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -175,8 +175,8 @@ func Test_we_cannot_delete_default_namespace(t *testing.T) {
 }
 
 func Test_deleting_current_namespace_blocks_data_commands_until_use(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	c := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	c := testutil.ConnectToServer(t, addr)
 	defer c.Close()
 	r := bufio.NewReader(c)
 
@@ -197,10 +197,10 @@ func Test_deleting_current_namespace_blocks_data_commands_until_use(t *testing.T
 }
 
 func Test_deleting_namespace_invalidates_other_attached_connections(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection1 := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection1 := testutil.ConnectToServer(t, addr)
 	defer connection1.Close()
-	connection2 := testutil.ConnectToServer(t)
+	connection2 := testutil.ConnectToServer(t, addr)
 	defer connection2.Close()
 	ra := bufio.NewReader(connection1)
 	rb := bufio.NewReader(connection2)

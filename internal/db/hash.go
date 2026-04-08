@@ -102,6 +102,4 @@ func (s *Store) HDel(key, field string) {
 	if len(hash) == 0 {
 		delete(s.hashes, key)
 	}
-
-	return
 }

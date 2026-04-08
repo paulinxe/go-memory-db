@@ -8,8 +8,8 @@ import (
 )
 
 func Test_push_fails_when_key_already_exists_for_other_type(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -22,8 +22,8 @@ func Test_push_fails_when_key_already_exists_for_other_type(t *testing.T) {
 }
 
 func Test_pop_fails_when_key_not_exists(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -33,8 +33,8 @@ func Test_pop_fails_when_key_not_exists(t *testing.T) {
 }
 
 func Test_we_can_push_and_pop_values(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -50,8 +50,8 @@ func Test_we_can_push_and_pop_values(t *testing.T) {
 }
 
 func Test_we_can_push_and_pop_values_with_spaces(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -64,8 +64,8 @@ func Test_we_can_push_and_pop_values_with_spaces(t *testing.T) {
 }
 
 func Test_lget_requires_key_argument(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -74,8 +74,8 @@ func Test_lget_requires_key_argument(t *testing.T) {
 }
 
 func Test_lget_returns_empty_when_key_missing(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -84,8 +84,8 @@ func Test_lget_returns_empty_when_key_missing(t *testing.T) {
 }
 
 func Test_lget_returns_whole_list_in_push_order(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)
@@ -100,8 +100,8 @@ func Test_lget_returns_whole_list_in_push_order(t *testing.T) {
 }
 
 func Test_lget_reflects_list_after_pop(t *testing.T) {
-	testutil.StartTestServer(t, 4)
-	connection := testutil.ConnectToServer(t)
+	_, addr := testutil.StartTestServer(t, 4)
+	connection := testutil.ConnectToServer(t, addr)
 	defer connection.Close()
 
 	reader := bufio.NewReader(connection)

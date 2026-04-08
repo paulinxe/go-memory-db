@@ -5,8 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 
 	"go-memory-db/internal/db"
 )
@@ -23,9 +27,24 @@ type Server struct {
 	Port           int
 	MaxConnections int
 
-	mutex      sync.Mutex // listener field only
-	namespaces *db.NamespaceRegistry
-	listener   net.Listener // set while Serve is running; Close() clears and closes it
+	listenerMutex sync.Mutex
+	namespaces    *db.NamespaceRegistry
+	listener      net.Listener // set while Serve() is running; Close() clears and closes it
+	// listenerAddress holds listener.Addr().String() after a successful net.Listen in Serve.
+	// It is safe to read via ListenerAddress without the listener mutex as its protected with atomic.Value.
+	listenerAddress atomic.Value
+
+	// Shutdown mode control fields
+	shutdownOnce  sync.Once
+	shutdownMutex sync.RWMutex // apart from protecting the bool, it also protects each new command WaitGroup
+	shuttingDown  bool
+
+	// WaitGroup to keep track of in-flight commands.
+	inflightCommandsWG sync.WaitGroup
+
+	// Map to keep track of active connections. This is used to close them gracefully when the server is shutting down.
+	connections      map[net.Conn]struct{}
+	connectionsMutex sync.Mutex
 }
 
 func NewServer(port, maxConnections int) *Server {
@@ -37,6 +56,7 @@ func NewServer(port, maxConnections int) *Server {
 		Port:           port,
 		MaxConnections: maxConnections,
 		namespaces:     db.NewNamespaceRegistry(),
+		connections:    make(map[net.Conn]struct{}),
 	}
 }
 
@@ -45,35 +65,68 @@ func (s *Server) Serve() error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	s.mutex.Lock()
+
+	s.listenerAddress.Store(listener.Addr().String())
+
+	s.setSignalListeners()
+
+	s.listenerMutex.Lock()
 	s.listener = listener
-	s.mutex.Unlock()
+	s.listenerMutex.Unlock()
 
 	err = s.serve(listener)
-
-	// If we reach this point, it means we are shutting down so let's proceed with closing.
-	_ = s.Close()
 
 	return err
 }
 
-// Close shuts down the listener so Serve's accept loop exits. It is idempotent and safe to call
-// more than once.
+// Close shuts down the whole server (connections, goroutines, etc). It is idempotent and safe to call
+// more than once. Concurrent callers block until the first shutdown finishes; later callers are
+// no-ops aside from waiting on the same Once completion.
 func (s *Server) Close() error {
-	s.mutex.Lock()
+	s.shutdownOnce.Do(func() {
+		s.listenerMutex.Lock()
+		listener := s.listener
+		s.listener = nil
+		s.listenerMutex.Unlock()
 
-	listener := s.listener
-	s.listener = nil
-	s.mutex.Unlock()
+		if listener != nil {
+			_ = listener.Close()
+		}
 
-	// Stop namespace lifecycle goroutines (e.g., TTL daemons).
-	s.namespaces.Shutdown()
+		// TODO: set shuttingDown, inflightCommandsWG.Wait(), snapshot and close tracked conns (plan §5)
 
-	if listener != nil {
-		return listener.Close()
-	}
+		s.namespaces.Shutdown()
+	})
 
 	return nil
+}
+
+// ListenerAddress returns the bound listen address string after Serve has called net.Listen, or "" before that.
+// After the first successful listen, the value is not updated (e.g. it is unchanged after Close).
+func (s *Server) ListenerAddress() string {
+	value := s.listenerAddress.Load()
+	if value == nil {
+		return ""
+	}
+
+	addr, ok := value.(string)
+	if !ok {
+		return ""
+	}
+
+	return addr
+}
+
+// setSignalListeners sets up the OS signals listeners for the server.
+// At the moment, it only supports SIGINT and SIGTERM for graceful shutdown.
+func (s *Server) setSignalListeners() {
+	shutdownChannel := make(chan os.Signal, 1)
+	signal.Notify(shutdownChannel, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-shutdownChannel
+		_ = s.Close()
+		signal.Stop(shutdownChannel)
+	}()
 }
 
 func (s *Server) serve(listener net.Listener) error {
@@ -90,6 +143,9 @@ func (s *Server) serve(listener net.Listener) error {
 		select {
 		case connections <- struct{}{}:
 			fmt.Printf("accepted connection from %s\n", conn.RemoteAddr())
+			s.connectionsMutex.Lock()
+			s.connections[conn] = struct{}{}
+			s.connectionsMutex.Unlock()
 			go handleConnection(conn, connections, s)
 		default:
 			printError(conn, "max clients reached")
@@ -99,7 +155,7 @@ func (s *Server) serve(listener net.Listener) error {
 }
 
 func handleConnection(conn net.Conn, connections <-chan struct{}, server *Server) {
-	defer closeConnection(conn, connections)
+	defer closeConnection(conn, connections, server)
 
 	session := &clientSession{
 		server:    server,
@@ -108,13 +164,32 @@ func handleConnection(conn net.Conn, connections <-chan struct{}, server *Server
 
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
+		server.shutdownMutex.RLock()
+		if server.shuttingDown {
+			server.shutdownMutex.RUnlock()
+			printError(conn, "server shutting down")
+			break
+		}
+
+		server.inflightCommandsWG.Add(1)
+		server.shutdownMutex.RUnlock()
 		line := scanner.Text()
-		handleCommand(conn, line, session)
+		func() {
+			// We need an anonymous function so we can use defer to decrement the waitgroup.
+			// TODO: most probably this is a code smell and we need a new Connection struct
+			defer server.inflightCommandsWG.Done()
+			handleCommand(conn, line, session)
+		}()
 	}
 }
 
-func closeConnection(conn net.Conn, connections <-chan struct{}) {
+func closeConnection(conn net.Conn, connections <-chan struct{}, server *Server) {
 	fmt.Printf("closing connection from %s\n", conn.RemoteAddr())
+
+	server.connectionsMutex.Lock()
+	delete(server.connections, conn)
+	server.connectionsMutex.Unlock()
+
 	conn.Close()
 	<-connections
 	fmt.Printf("connection from %s closed\n", conn.RemoteAddr())
